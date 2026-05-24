@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+config.toml
+debug_crops/
+logs/
+runtime/
+build/
+dist/
+docs/goals/
+alert_sounds/
+MapleAlert.spec
+*.tmp
+*.zip

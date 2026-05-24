@@ -1,0 +1,153 @@
+[capture]
+# Window title substring to look for. If not found, the script falls back to the selected monitor.
+window_title = "MapleStory Worlds"
+target_window = true
+monitor_index = 1
+# 0.25 FPS means one visual scan every 4 seconds. Lower CPU is preferred over instant response.
+fps = 0.25
+relocate_window_seconds = 2.0
+
+[roi.captcha]
+# Center 50% of the capture area.
+x1 = 0.25
+y1 = 0.25
+x2 = 0.75
+y2 = 0.75
+
+[roi.minimap]
+# Top-left portion of the capture area. Wide enough for large minimaps.
+x1 = 0.0
+y1 = 0.0
+x2 = 0.30
+y2 = 0.31
+
+[scaling]
+# Test screenshots were 1919x1079. The script compares the live capture size
+# to this reference and scales fixed-pixel detectors automatically.
+enabled = true
+reference_width = 1919
+reference_height = 1079
+min_scale = 0.50
+max_scale = 1.60
+
+[detection.captcha]
+use_template = true
+template_path = ""
+template_threshold = 0.82
+template_scale_min = 0.75
+template_scale_max = 1.25
+template_scale_steps = 11
+
+use_heuristic = true
+confidence_threshold = 0.90
+# Strict CAPTCHA heuristic: find the 145x100 blue lie-detector panel patch
+# with the dark detector icon in the upper-right portion of that patch.
+patch_width = 145
+patch_height = 100
+patch_scale_min = 0.94
+patch_scale_max = 1.06
+patch_scale_steps = 5
+patch_blue_hue_min = 101
+patch_blue_hue_max = 110
+patch_blue_saturation_min = 90
+patch_blue_value_min = 100
+patch_blue_value_max = 215
+patch_blue_fill_min = 0.82
+patch_lower_blue_y_min = 0.45
+patch_lower_blue_fill_min = 0.94
+patch_dark_value_max = 95
+patch_dark_region_x1 = 0.55
+patch_dark_region_y1 = 0.00
+patch_dark_region_x2 = 1.00
+patch_dark_region_y2 = 0.45
+patch_dark_fill_min = 0.33
+patch_dark_fill_max = 0.52
+patch_blue_h_mean_min = 104.0
+patch_blue_h_mean_max = 106.5
+patch_blue_s_mean_min = 148.0
+patch_blue_s_mean_max = 162.0
+patch_blue_v_mean_min = 178.0
+patch_blue_v_mean_max = 194.0
+patch_blue_h_std_max = 2.5
+patch_blue_s_std_max = 12.0
+patch_blue_v_std_max = 16.0
+
+[detection.minimap]
+# Tight red-dot detector: isolates the minimap content and looks for small circular bright-red blobs.
+enabled = true
+red_hue_max = 8
+red_hue_wrap_min = 174
+saturation_min = 220
+value_min = 120
+dot_width_min = 8
+dot_width_max = 13
+dot_height_min = 8
+dot_height_max = 13
+dot_area_min = 42.0
+dot_area_max = 85.0
+dot_circularity_min = 0.85
+dot_extent_min = 0.53
+dot_pixel_count_min = 50
+dot_mean_saturation_min = 240
+dot_mean_value_min = 220
+
+[alerts]
+# Safe mode keeps notifications local: console + sound + log only.
+safe_mode = true
+audible = true
+telegram_enabled = true
+# Legacy fallback for older configs. New alert volume control uses generated WAV amplitude.
+sound_multiplier = 2
+# Overlay-controlled WAV amplitude. 100 is normal; 250 is the max.
+alert_volume_percent = 200
+lie_detect_volume_percent = 200
+player_detected_volume_percent = 200
+alert_settings_file = "runtime/alert_settings.json"
+# Lie detector: alert immediately when visible, then repeat while still visible.
+captcha_repeat_seconds = 30
+# Minimap red: require continuous red presence before the first alert, then repeat while still present.
+minimap_required_seconds = 20
+minimap_repeat_seconds = 30
+detection_log_interval_seconds = 5
+# Prints a heartbeat even when nothing is detected, so the console does not look frozen.
+status_interval_seconds = 15
+
+[telegram]
+# You can also set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables.
+bot_token = ""
+chat_id = ""
+
+[watchdog]
+heartbeat_file = "runtime/heartbeat.json"
+watchdog_heartbeat_file = "runtime/watchdog_heartbeat.json"
+quit_file = "runtime/quit_requested.json"
+heartbeat_interval_seconds = 2
+stale_seconds = 12
+check_interval_seconds = 2
+restart_delay_seconds = 3
+startup_grace_seconds = 15
+
+[overlay]
+enabled = true
+x = 320
+y = 48
+opacity = 0.86
+update_interval_ms = 250
+warning_seconds = 6
+stale_seconds = 14
+font_size = 10
+
+[debug]
+enabled = false
+show_windows = false
+save_crops = false
+crop_dir = "debug_crops"
+save_blue_block_crops = true
+blue_block_crop_dir = "debug_crops/blue_blocks"
+blue_block_crop_size = 180
+blue_block_crop_limit = 10
+save_red_dot_crops = true
+red_dot_crop_dir = "debug_crops/red_dots"
+red_dot_crop_size = 100
+red_dot_crop_limit = 10
+log_file = "logs/detections.log"
