@@ -1,6 +1,25 @@
 [capture]
 # Window title substring to look for. If not found, the script falls back to the selected monitor.
 window_title = "Maple"
+# Prevent this tool, browsers, editors, terminals, and Explorer windows from being selected when window_title = "Maple".
+ignored_window_title_substrings = [
+  "Maple Alert",
+  "Maple Alert Health",
+  "MapleAlertPortable",
+  "Maple-alert",
+  "File Explorer",
+  "Google Chrome",
+  "Microsoft Edge",
+  "Mozilla Firefox",
+  "Brave",
+  "Windows PowerShell",
+  "PowerShell",
+  "Command Prompt",
+  "cmd.exe",
+  "Terminal",
+  "Visual Studio Code",
+  "Codex",
+]
 target_window = true
 monitor_index = 1
 # 0.25 FPS means one visual scan every 4 seconds. Lower CPU is preferred over instant response.

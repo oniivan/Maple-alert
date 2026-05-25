@@ -44,6 +44,24 @@ except ModuleNotFoundError:  # Python 3.10 fallback.
 DEFAULT_CONFIG: dict[str, Any] = {
     "capture": {
         "window_title": "Maple",
+        "ignored_window_title_substrings": [
+            "Maple Alert",
+            "Maple Alert Health",
+            "MapleAlertPortable",
+            "Maple-alert",
+            "File Explorer",
+            "Google Chrome",
+            "Microsoft Edge",
+            "Mozilla Firefox",
+            "Brave",
+            "Windows PowerShell",
+            "PowerShell",
+            "Command Prompt",
+            "cmd.exe",
+            "Terminal",
+            "Visual Studio Code",
+            "Codex",
+        ],
         "target_window": True,
         "monitor_index": 1,
         "fps": 0.25,
@@ -587,11 +605,39 @@ def list_windows() -> list[tuple[str, Rect]]:
     return found
 
 
-def find_window_rect(title_substring: str) -> Rect | None:
+def ignored_window_title_substrings(capture_cfg: dict[str, Any]) -> list[str]:
+    raw_ignored = capture_cfg.get(
+        "ignored_window_title_substrings",
+        DEFAULT_CONFIG["capture"]["ignored_window_title_substrings"],
+    )
+    if isinstance(raw_ignored, str):
+        raw_ignored = [raw_ignored]
+    if not isinstance(raw_ignored, list):
+        raw_ignored = DEFAULT_CONFIG["capture"]["ignored_window_title_substrings"]
+    return [
+        str(fragment).casefold().strip()
+        for fragment in raw_ignored
+        if str(fragment).strip()
+    ]
+
+
+def is_ignored_window_title(title: str, ignored_fragments: list[str]) -> bool:
+    folded_title = title.casefold().strip()
+    return any(fragment in folded_title for fragment in ignored_fragments)
+
+
+def find_window_rect(title_substring: str, ignored_titles: list[str] | None = None) -> Rect | None:
     needle = title_substring.casefold().strip()
     if not needle:
         return None
+    ignored = (
+        ignored_titles
+        if ignored_titles is not None
+        else ignored_window_title_substrings(DEFAULT_CONFIG["capture"])
+    )
     for title, rect in list_windows():
+        if is_ignored_window_title(title, ignored):
+            continue
         if needle in title.casefold():
             return rect
     return None
@@ -614,7 +660,10 @@ def get_monitor_rect(sct: mss.mss, monitor_index: int) -> Rect:
 def resolve_capture_rect(sct: mss.mss, config: dict[str, Any]) -> tuple[Rect, str]:
     capture_cfg = config["capture"]
     if capture_cfg["target_window"]:
-        window_rect = find_window_rect(capture_cfg["window_title"])
+        window_rect = find_window_rect(
+            capture_cfg["window_title"],
+            ignored_window_title_substrings(capture_cfg),
+        )
         if window_rect:
             return window_rect, "window"
 
