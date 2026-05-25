@@ -21,8 +21,8 @@ player alert. Click/drag either meter to adjust that WAV volume up to 250%.
 If the top bar flashes yellow for system volume, Windows is muted or below 70%.
 The IGNORE button appears only while that warning is active. Click it to suppress
 the current warning; a flashing WARN button remains while that warning is ignored.
-If the top bar flashes red with MAPLESTORY NOT DETECTED, the game window was
-not found and monitor fallback is active. Starting MapleStory later is okay; it
+If the top bar flashes red with MAPLE NOT DETECTED, the game window was
+not found and monitor fallback is active. Starting Maple later is okay; it
 keeps checking and will switch when the window appears.
 If the volume section turns red, the app's alert intensity is below 25%.
 

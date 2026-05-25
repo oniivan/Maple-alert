@@ -14,7 +14,7 @@ def test_heartbeat_marks_window_missing_when_monitor_fallback_is_used() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         config = {
             "_config_dir": temp_dir,
-            "capture": {"target_window": True, "window_title": "MapleStory Worlds"},
+            "capture": {"target_window": True, "window_title": "Maple"},
             "watchdog": {"heartbeat_file": "runtime/heartbeat.json"},
             "_runtime_scale": {"pixel_scale": 1.0},
         }
@@ -23,7 +23,7 @@ def test_heartbeat_marks_window_missing_when_monitor_fallback_is_used() -> None:
         payload = json.loads((Path(temp_dir) / "runtime" / "heartbeat.json").read_text())
 
         assert payload["target_window"] is True
-        assert payload["maplestory_detected"] is False
+        assert payload["maple_detected"] is False
         assert payload["source"] == "monitor"
         assert payload["resolution"] == [1920, 1080]
 
@@ -32,7 +32,7 @@ def test_heartbeat_marks_window_detected_when_window_capture_is_used() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         config = {
             "_config_dir": temp_dir,
-            "capture": {"target_window": True, "window_title": "MapleStory Worlds"},
+            "capture": {"target_window": True, "window_title": "Maple"},
             "watchdog": {"heartbeat_file": "runtime/heartbeat.json"},
             "_runtime_scale": {"pixel_scale": 1.0},
         }
@@ -40,7 +40,7 @@ def test_heartbeat_marks_window_detected_when_window_capture_is_used() -> None:
         write_heartbeat(config, "window", Rect(50, 50, 1600, 900))
         payload = json.loads((Path(temp_dir) / "runtime" / "heartbeat.json").read_text())
 
-        assert payload["maplestory_detected"] is True
+        assert payload["maple_detected"] is True
         assert payload["source"] == "window"
         assert payload["resolution"] == [1600, 900]
 

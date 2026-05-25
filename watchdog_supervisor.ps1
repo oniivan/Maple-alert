@@ -111,7 +111,7 @@ function Write-NewWatchdogOutput {
             if ([string]::IsNullOrWhiteSpace($Line)) {
                 continue
             }
-            if ($Line -match "Maple alert:|Maple detection:|cleared|Quit request|Resolution|Detected new resolution|MapleStory") {
+            if ($Line -match "Maple alert:|Maple detection:|cleared|Quit request|Resolution|Detected new resolution|Maple") {
                 Write-Host $Line
             }
         }
@@ -223,12 +223,12 @@ function Write-MonitorStatusChanges {
         $script:LastMonitorStatusKey = $StatusKey
 
         if ($TargetWindow -and -not $MapleDetected) {
-            Write-Host ("MapleStory not detected; using monitor fallback at resolution {0}x{1}." -f $Width, $Height) -ForegroundColor Red
+            Write-Host ("Maple not detected; using monitor fallback at resolution {0}x{1}." -f $Width, $Height) -ForegroundColor Red
             return
         }
 
         if ($TargetWindow -and $MapleDetected -and ($PreviousKey -eq "" -or $PreviousKey -match "\|False$")) {
-            Write-Host ("MapleStory detected; using window capture at resolution {0}x{1}." -f $Width, $Height) -ForegroundColor Green
+            Write-Host ("Maple detected; using window capture at resolution {0}x{1}." -f $Width, $Height) -ForegroundColor Green
             return
         }
 

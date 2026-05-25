@@ -1,4 +1,4 @@
-# MapleStory Worlds Visual Alert Monitor
+# Maple Visual Alert Monitor
 
 This is a local Windows visual monitor. It reads screen pixels, checks two configurable regions of interest, and alerts when it sees either a centered CAPTCHA-like dialog or a red dot in the top-left minimap. It does not click, type, solve CAPTCHA, control the game, inject into a process, or hide itself.
 
@@ -17,7 +17,7 @@ I will not help with anti-detection, evasion, or plausible-deniability technique
 ## Architecture
 
 - `mss` captures only small ROIs. The default visual scan cadence is `0.25 FPS`, meaning one scan every 4 seconds, to keep CPU low.
-- `pygetwindow` tries to locate a visible window whose title contains `MapleStory Worlds`.
+- `pygetwindow` tries to locate a visible window whose title contains `Maple`.
 - If the window is not found, capture falls back to the configured monitor.
 - ROIs are proportional, so they scale with resolution/window size:
   - CAPTCHA: center 50% by default.
@@ -30,7 +30,7 @@ I will not help with anti-detection, evasion, or plausible-deniability technique
   - Minimap red: waits until red has been continuously visible for 20 seconds, alerts once, then repeats every 30 seconds while still visible. If red disappears, the 20-second timer resets.
 - The sound is generated as WAV audio using the same alert frequencies/durations that the old `winsound.Beep()` version used. The overlay has separate `LIE DETECT VOLUME` and `PLAYER DETECT VOLUME` meters; each controls the real WAV amplitude for that alert type. Meters range from `0%` to `250%`; Windows master volume still applies.
 - The overlay also checks Windows master output volume. If the system is muted or below `70%`, the heartbeat bar pulses yellow and says so. `IGNORE` appears only while that warning is active; after ignoring, a flashing yellow `WARN` button remains while the low-volume condition still exists.
-- If the MapleStory Worlds window is not found while `target_window = true`, the overlay flashes red with `MAPLESTORY NOT DETECTED`. The monitor keeps checking, so starting MapleStory after the alert tool is already running will switch capture to the window once the title appears.
+- If the Maple window is not found while `target_window = true`, the overlay flashes red with `MAPLE NOT DETECTED`. The monitor keeps checking, so starting Maple after the alert tool is already running will switch capture to the window once the title appears.
 - Safe mode is on by default, so the script only prints, beeps, and logs until you explicitly enable Telegram.
 
 ## Install
@@ -101,7 +101,7 @@ The spinner changes every few tenths of a second so you can see the overlay itse
 
 If the system volume line flashes yellow, Windows audio is muted or below `70%`. The `IGNORE` button appears only while that warning is active; click it to suppress the current warning. While ignored, the small `WARN` button stays visible and flashes yellow until system volume recovers or you click it to re-enable the warning. If an alert volume section turns red, that alert intensity is below `25%`.
 
-If the capture size changes while running, the monitor recalculates `pixel_scale` and the overlay briefly shows `DETECTED NEW RESOLUTION WxH`. The command window also prints useful state changes such as MapleStory detected/not detected, detected resolution changes, detection alerts, repeated continued alerts, and cleared detections.
+If the capture size changes while running, the monitor recalculates `pixel_scale` and the overlay briefly shows `DETECTED NEW RESOLUTION WxH`. The command window also prints useful state changes such as Maple detected/not detected, detected resolution changes, detection alerts, repeated continued alerts, and cleared detections.
 
 The portable folder also includes:
 
@@ -212,7 +212,7 @@ stale_seconds = 14
 font_size = 10
 ```
 
-When the console says `MapleStory not detected` or `Capture source=monitor`, the script did not find the configured window title and is watching the selected monitor instead. In monitor fallback, auto-scaling is based on the full monitor capture size. If MapleStory is a smaller non-maximized window inside that monitor, the scale can be wrong because the script does not yet visually infer the game window bounds from the monitor image. Run `MapleAlert.exe --list-windows` from the portable folder, find the exact MapleStory Worlds title, and update `window_title` in `config.toml` if needed. The default title substring is `MapleStory Worlds`, which should match titles such as `MapleStory Worlds-ChronoStory`.
+When the console says `Maple not detected` or `Capture source=monitor`, the script did not find the configured window title and is watching the selected monitor instead. In monitor fallback, auto-scaling is based on the full monitor capture size. If Maple is a smaller non-maximized window inside that monitor, the scale can be wrong because the script does not yet visually infer the game window bounds from the monitor image. Run `MapleAlert.exe --list-windows` from the portable folder, find the exact Maple title, and update `window_title` in `config.toml` if needed. The default title substring is `Maple`, which should match common Maple client titles.
 
 Resolution scaling:
 

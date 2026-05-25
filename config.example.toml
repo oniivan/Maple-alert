@@ -1,6 +1,6 @@
 [capture]
 # Window title substring to look for. If not found, the script falls back to the selected monitor.
-window_title = "MapleStory Worlds"
+window_title = "Maple"
 target_window = true
 monitor_index = 1
 # 0.25 FPS means one visual scan every 4 seconds. Lower CPU is preferred over instant response.

@@ -43,7 +43,7 @@ except ModuleNotFoundError:  # Python 3.10 fallback.
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "capture": {
-        "window_title": "MapleStory Worlds",
+        "window_title": "Maple",
         "target_window": True,
         "monitor_index": 1,
         "fps": 0.25,
@@ -1921,7 +1921,7 @@ def write_heartbeat(
         "resolution": [rect.width, rect.height],
         "target_window": target_window,
         "window_title": str(config["capture"].get("window_title", "")),
-        "maplestory_detected": (source == "window") if target_window else True,
+        "maple_detected": (source == "window") if target_window else True,
         "runtime_scale": config.get("_runtime_scale", {}),
         "alert_status": alert_status or {
             "lie_last_seen_epoch": None,
@@ -2718,7 +2718,7 @@ def run_overlay(config: dict[str, Any]) -> int:
         spin = spinner[frame["i"] % len(spinner)]
         frame["i"] += 1
         if maple_missing:
-            text = f"MAPLESTORY NOT DETECTED {spin}"
+            text = f"MAPLE NOT DETECTED {spin}"
         elif active_alert:
             text = f"{active_alert_label(str(active_alert))} {spin}"
         elif system_volume_bad:
@@ -2924,12 +2924,12 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
                         )
                     elif source_changed and new_source == "window":
                         status_line = (
-                            f"MapleStory detected; window capture resolution {new_rect.width}x{new_rect.height}; "
+                            f"Maple detected; window capture resolution {new_rect.width}x{new_rect.height}; "
                             f"pixel_scale={scale_info.pixel_scale:.4f}"
                         )
                     elif source_changed and new_source == "monitor":
                         status_line = (
-                            f"MapleStory not detected; monitor fallback resolution {new_rect.width}x{new_rect.height}; "
+                            f"Maple not detected; monitor fallback resolution {new_rect.width}x{new_rect.height}; "
                             f"pixel_scale={scale_info.pixel_scale:.4f}"
                         )
                     else:
@@ -2949,13 +2949,13 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
                     if new_source == "monitor" and config["capture"]["target_window"]:
                         print(
                             (
-                                "MapleStory not detected; monitor fallback is active. "
-                                "The overlay will flash red until the MapleStory Worlds window is found."
+                                "Maple not detected; monitor fallback is active. "
+                                "The overlay will flash red until the Maple window is found."
                             ),
                             flush=True,
                         )
                         logger.warning(
-                            "MapleStory window title '%s' was not found; falling back to monitor_index=%s. "
+                            "Maple window title '%s' was not found; falling back to monitor_index=%s. "
                             "Run 'MapleAlert.exe --list-windows' and copy the visible title into config.toml if needed.",
                             config["capture"]["window_title"],
                             config["capture"]["monitor_index"],
