@@ -9,7 +9,7 @@ if not exist "%SUPERVISOR%" set "SUPERVISOR=.\watchdog_supervisor.ps1"
 
 if not exist "%SUPERVISOR%" (
   echo Could not find watchdog_supervisor.ps1.
-  echo Make sure you extracted the whole MapleAlertPortable folder before running this.
+  echo Make sure you extracted the whole Maple Alert folder before running this.
   powershell -NoProfile -Command "for ($i=0; $i -lt 4; $i++) { [console]::beep(2200,180); Start-Sleep -Milliseconds 80 }"
   pause
   exit /b 1

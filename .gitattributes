@@ -1,0 +1,3 @@
+_internal/** -text
+MapleAlert.exe -text
+alert_sounds/*.wav -text

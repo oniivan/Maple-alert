@@ -1,5 +1,5 @@
-Maple Alert portable
-====================
+Maple Alert
+===========
 
 Run this:
 
@@ -32,4 +32,4 @@ starts the crash/hang watchdog layers.
 Optional:
 
   Edit config.toml to tune thresholds or add Telegram.
-  Open README.md for the full technical notes.
+  Open README.md for a short feature list.
