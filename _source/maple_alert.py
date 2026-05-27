@@ -47,7 +47,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "ignored_window_title_substrings": [
             "Maple Alert",
             "Maple Alert Health",
-            "MapleAlertPortable",
             "Maple-alert",
             "File Explorer",
             "Google Chrome",

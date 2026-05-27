@@ -79,9 +79,9 @@ python .\maple_alert.py --config .\config.toml --watchdog
 
 Watchdog mode starts the monitor as a child process. The monitor writes `runtime\heartbeat.json` every few seconds. The watchdog restarts the monitor if the child exits or the heartbeat goes stale, but it only plays the distinct warning tone after sustained downtime or repeated failures. The one-click batch file adds an outer PowerShell supervisor that watches `runtime\watchdog_heartbeat.json`; if the watchdog exits or hangs while the command window is open, the outer supervisor plays its own chirp and restarts the watchdog.
 
-## One-Click Portable Folder
+## One-Click Repo Folder
 
-The portable build is meant to be simple to send to someone else. In the shipped portable folder, run only this file:
+The repo folder is meant to be simple to send to someone else. After downloading or copying the repo folder, run only this file:
 
 ```text
 START_MAPLE_ALERT.bat
@@ -103,7 +103,7 @@ If the system volume line flashes yellow, Windows audio is muted or below `70%`.
 
 If the capture size changes while running, the monitor recalculates `pixel_scale` and the overlay briefly shows `DETECTED NEW RESOLUTION WxH`. The command window also prints useful state changes such as Maple detected/not detected, detected resolution changes, detection alerts, repeated continued alerts, and cleared detections.
 
-The portable folder also includes:
+The repo folder also includes:
 
 - `MapleAlert.exe` - the packaged Python app. Do not run this directly unless troubleshooting.
 - `config.toml` - editable settings.
@@ -112,20 +112,22 @@ The portable folder also includes:
 - `README.md` - full technical notes.
 - `_internal\` - packaged dependencies and the hidden supervisor script.
 
-Build or rebuild it from this source folder:
+Build or rebuild the one-click files from this source folder:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\build_portable.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build_one_click.ps1
 ```
 
-The output is:
+The build refreshes the repo root files:
 
 ```text
-dist\MapleAlertPortable\
-dist\MapleAlertPortable.zip
+MapleAlert.exe
+_internal\
+alert_sounds\
+config.toml
 ```
 
-Move `MapleAlertPortable.zip` to another Windows PC, unzip it, and double-click `START_MAPLE_ALERT.bat`. If the new PC has a different resolution, scaling, or game window size, edit `config.toml` and use the commands in the calibration section below.
+To move it to another Windows PC, copy or download the repo folder, then double-click `START_MAPLE_ALERT.bat`. If the new PC has a different resolution, scaling, or game window size, edit `config.toml` and use the commands in the calibration section below.
 
 The exe is unsigned, so Windows may show a SmartScreen warning the first time it runs.
 
@@ -152,7 +154,7 @@ To test a saved full-screen screenshot directly, use:
 .\MapleAlert.exe --config .\config.toml --test-image "C:\path\to\screenshot.png"
 ```
 
-In the portable folder, open PowerShell or Command Prompt there and run the same command with `MapleAlert.exe`. This runs the same ROI and detector logic without live screen capture, saves the CAPTCHA/minimap crops to `debug_crops`, and prints the confidence details. If this fails while the CAPTCHA is visible in the saved `*_captcha_roi.png`, tune `[detection.captcha]`; if the CAPTCHA is not visible in that crop, tune `[roi.captcha]`.
+In the repo folder, open PowerShell or Command Prompt there and run the same command with `MapleAlert.exe`. This runs the same ROI and detector logic without live screen capture, saves the CAPTCHA/minimap crops to `debug_crops`, and prints the confidence details. If this fails while the CAPTCHA is visible in the saved `*_captcha_roi.png`, tune `[detection.captcha]`; if the CAPTCHA is not visible in that crop, tune `[roi.captcha]`.
 
 In live monitoring, the detector saves a crop around the best CAPTCHA patch candidate only when the CAPTCHA alert actually fires. Test-image runs also save a crop for inspection. The rolling folder is `debug_crops\blue_blocks`; it keeps only ten files, `blue_block_00_*.png` through `blue_block_09_*.png`, and overwrites the oldest slot as it continues.
 
@@ -223,7 +225,7 @@ stale_seconds = 14
 font_size = 10
 ```
 
-When the console says `Maple not detected` or `Capture source=monitor`, the script did not find the configured window title and is watching the selected monitor instead. In monitor fallback, auto-scaling is based on the full monitor capture size. If Maple is a smaller non-maximized window inside that monitor, the scale can be wrong because the script does not yet visually infer the game window bounds from the monitor image. Run `MapleAlert.exe --list-windows` from the portable folder, find the exact Maple title, and update `window_title` in `config.toml` if needed. The default title substring is `Maple`, which should match common Maple client titles.
+When the console says `Maple not detected` or `Capture source=monitor`, the script did not find the configured window title and is watching the selected monitor instead. In monitor fallback, auto-scaling is based on the full monitor capture size. If Maple is a smaller non-maximized window inside that monitor, the scale can be wrong because the script does not yet visually infer the game window bounds from the monitor image. Run `MapleAlert.exe --list-windows` from the repo folder, find the exact Maple title, and update `window_title` in `config.toml` if needed. The default title substring is `Maple`, which should match common Maple client titles.
 
 Resolution scaling:
 

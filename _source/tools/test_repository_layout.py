@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_repo_root_is_runnable_portable_layout() -> None:
+def test_repo_root_is_runnable_one_click_layout() -> None:
     required_root_files = [
         "START_MAPLE_ALERT.bat",
         "MapleAlert.exe",
@@ -29,6 +29,6 @@ def test_repo_root_has_no_debug_batch_clutter() -> None:
 
 
 if __name__ == "__main__":
-    test_repo_root_is_runnable_portable_layout()
+    test_repo_root_is_runnable_one_click_layout()
     test_repo_root_has_no_debug_batch_clutter()
     print("repository layout tests passed")

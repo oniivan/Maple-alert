@@ -1,6 +1,6 @@
 # Maple Alert
 
-Download the repo ZIP, extract it, then run:
+Download the repo ZIP or clone the repo, extract it if needed, then run:
 
 ```text
 START_MAPLE_ALERT.bat
@@ -27,4 +27,3 @@ This detects visual events and alerts the user. It does not automate gameplay or
 - `README_FIRST.txt` - short user notes
 - `_debug_tools\` - optional calibration/test launchers
 - `_source\` - source code, tests, and build script
-
