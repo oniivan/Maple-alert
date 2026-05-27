@@ -77,7 +77,7 @@ Watchdog mode:
 python .\maple_alert.py --config .\config.toml --watchdog
 ```
 
-Watchdog mode starts the monitor as a child process. The monitor writes `runtime\heartbeat.json` every few seconds; if the child exits or the heartbeat goes stale, the watchdog plays a distinct warning tone, optionally sends Telegram when configured, and restarts the monitor. The one-click batch file adds an outer PowerShell supervisor that watches `runtime\watchdog_heartbeat.json`; if the watchdog exits or hangs while the command window is open, the outer supervisor plays its own chirp and restarts the watchdog.
+Watchdog mode starts the monitor as a child process. The monitor writes `runtime\heartbeat.json` every few seconds. The watchdog restarts the monitor if the child exits or the heartbeat goes stale, but it only plays the distinct warning tone after sustained downtime or repeated failures. The one-click batch file adds an outer PowerShell supervisor that watches `runtime\watchdog_heartbeat.json`; if the watchdog exits or hangs while the command window is open, the outer supervisor plays its own chirp and restarts the watchdog.
 
 ## One-Click Portable Folder
 
@@ -131,7 +131,7 @@ The exe is unsigned, so Windows may show a SmartScreen warning the first time it
 
 ## Watchdog Limits
 
-The watchdog is practical protection, not a guarantee. It can catch normal Python crashes, module errors, most hangs that stop the capture loop, and stale heartbeat writes. The batch launcher also starts an outer PowerShell supervisor, which restarts the watchdog if the watchdog exits or stops updating its own heartbeat for about 30 seconds while the launcher window is still open.
+The watchdog is practical protection, not a guarantee. It can catch normal Python crashes, module errors, most hangs that stop the capture loop, and stale heartbeat writes. A single monitor crash is logged and restarted quietly. The watchdog alarm starts only if the monitor is unavailable for 120 seconds or if 3 monitor failures happen inside 5 minutes; it repeats no faster than every 120 seconds while the monitor remains unhealthy. The overlay flashes red with `MONITOR CRASHED X TIMES IN 5 MINS` or `MONITOR DOWN Xm+`, then keeps that warning latched until the monitor has recovered cleanly for 600 seconds. The batch launcher also starts an outer PowerShell supervisor, which restarts the watchdog if the watchdog exits or stops updating its own heartbeat for about 30 seconds while the launcher window is still open.
 
 No local wrapper can be completely failsafe if Windows sleeps, the PC loses power, audio is muted, the command window is closed, the whole system freezes, PowerShell itself hangs, or Telegram/network access is unavailable. For extra resilience, keep the command window visible and use Windows Task Scheduler to start `START_MAPLE_ALERT.bat` at login.
 
@@ -191,6 +191,17 @@ status_interval_seconds = 15
 ```
 
 `sound_multiplier` and `alert_volume_percent` are kept as fallbacks for older configs. New configs use `lie_detect_volume_percent` and `player_detected_volume_percent`; `100` is normal generated-WAV amplitude and `250` is the highest generated-WAV amplitude.
+
+Watchdog health thresholds:
+
+```toml
+[watchdog]
+crash_window_seconds = 300
+crash_alert_count = 3
+monitor_down_alert_seconds = 120
+watchdog_realert_seconds = 120
+healthy_clear_seconds = 600
+```
 
 To export or regenerate the WAV files:
 

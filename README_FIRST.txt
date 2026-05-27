@@ -24,6 +24,8 @@ the current warning; a flashing WARN button remains while that warning is ignore
 If the top bar flashes red with MAPLE NOT DETECTED, the game window was
 not found and monitor fallback is active. Starting Maple later is okay; it
 keeps checking and will switch when the window appears.
+If the top bar flashes red with MONITOR CRASHED or MONITOR DOWN, the monitor
+has been crashing repeatedly or has been unavailable long enough to matter.
 If the volume section turns red, the app's alert intensity is below 25%.
 
 Do not run MapleAlert.exe directly unless you are troubleshooting. The BAT file

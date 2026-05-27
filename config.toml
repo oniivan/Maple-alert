@@ -145,6 +145,14 @@ stale_seconds = 12
 check_interval_seconds = 2
 restart_delay_seconds = 3
 startup_grace_seconds = 15
+# The watchdog stays quiet for ordinary one-off monitor restarts. It only plays
+# the watchdog alarm if the monitor is down for 2+ minutes, or if this many
+# monitor failures happen inside the rolling crash window.
+crash_window_seconds = 300
+crash_alert_count = 3
+monitor_down_alert_seconds = 120
+watchdog_realert_seconds = 120
+healthy_clear_seconds = 600
 
 [overlay]
 enabled = true

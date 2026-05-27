@@ -162,6 +162,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "check_interval_seconds": 2,
         "restart_delay_seconds": 3,
         "startup_grace_seconds": 15,
+        "crash_window_seconds": 300,
+        "crash_alert_count": 3,
+        "monitor_down_alert_seconds": 120,
+        "watchdog_realert_seconds": 120,
+        "healthy_clear_seconds": 600,
     },
     "overlay": {
         "enabled": True,
@@ -232,6 +237,32 @@ def overlay_live_status_text(
     if parts:
         return f"LIVE | {' '.join(parts)} {spin}"
     return f"LIVE {spin}"
+
+
+def minutes_label(seconds: float | int) -> str:
+    minutes = max(1, int(round(float(seconds) / 60.0)))
+    return f"{minutes} MINS" if minutes != 1 else "1 MIN"
+
+
+def watchdog_health_title(snapshot: dict[str, Any]) -> str:
+    title = str(snapshot.get("title", "")).strip()
+    if title:
+        return title
+    reason = snapshot.get("reason")
+    if reason == "monitor_down":
+        return "MONITOR DOWN"
+    if reason == "crash_loop":
+        count = int(snapshot.get("crash_count_window", 0) or 0)
+        window = minutes_label(float(snapshot.get("window_seconds", 300) or 300))
+        return f"MONITOR CRASHED {count} TIMES IN {window}"
+    return ""
+
+
+def overlay_watchdog_health_text(snapshot: dict[str, Any] | None, spin: str) -> str:
+    title = watchdog_health_title(snapshot if isinstance(snapshot, dict) else {})
+    if title:
+        return f"{title} {spin}"
+    return f"MONITOR HEALTH ALERT {spin}"
 
 
 def overlay_drawer_target_height(minimized: bool) -> int:
@@ -366,6 +397,128 @@ class SystemVolumeState:
         if self.percent is not None and self.percent < SYSTEM_VOLUME_WARNING_PERCENT:
             return True
         return False
+
+
+class WatchdogFailureTracker:
+    def __init__(self, config: dict[str, Any]) -> None:
+        watchdog_cfg = config.get("watchdog", {})
+        self.window_seconds = max(30.0, float(watchdog_cfg.get("crash_window_seconds", 300)))
+        self.crash_alert_count = max(1, int(watchdog_cfg.get("crash_alert_count", 3)))
+        self.monitor_down_alert_seconds = max(
+            10.0,
+            float(watchdog_cfg.get("monitor_down_alert_seconds", 120)),
+        )
+        self.realert_seconds = max(10.0, float(watchdog_cfg.get("watchdog_realert_seconds", 120)))
+        self.healthy_clear_seconds = max(10.0, float(watchdog_cfg.get("healthy_clear_seconds", 600)))
+        self.events: list[dict[str, Any]] = []
+        self.monitor_unavailable_since: float | None = None
+        self.unhealthy_since: float | None = None
+        self.healthy_since: float | None = None
+        self.latched_title = ""
+        self.latched_reason = ""
+        self.last_sound_at: float | None = None
+
+    def record_abnormal(self, reason: str, now: float | None = None, exit_code: int | None = None) -> None:
+        timestamp = time.time() if now is None else float(now)
+        event = {
+            "epoch_seconds": timestamp,
+            "reason": reason,
+        }
+        if exit_code is not None:
+            event["exit_code"] = int(exit_code)
+        self.events.append(event)
+        self.healthy_since = None
+        if self.monitor_unavailable_since is None:
+            self.monitor_unavailable_since = timestamp
+
+    def _prune(self, now: float) -> list[dict[str, Any]]:
+        cutoff = now - self.window_seconds
+        self.events = [
+            event
+            for event in self.events
+            if float(event.get("epoch_seconds", 0.0)) >= cutoff
+        ]
+        return self.events
+
+    def update(self, monitor_available: bool, now: float | None = None) -> dict[str, Any]:
+        timestamp = time.time() if now is None else float(now)
+        events = self._prune(timestamp)
+
+        if monitor_available:
+            self.monitor_unavailable_since = None
+        elif self.monitor_unavailable_since is None:
+            self.monitor_unavailable_since = timestamp
+
+        down_seconds = (
+            0.0
+            if self.monitor_unavailable_since is None
+            else max(0.0, timestamp - self.monitor_unavailable_since)
+        )
+        crash_count = len(events)
+        raw_reason = ""
+        raw_title = ""
+        if crash_count >= self.crash_alert_count:
+            raw_reason = "crash_loop"
+            raw_title = (
+                f"MONITOR CRASHED {crash_count} TIMES IN "
+                f"{minutes_label(self.window_seconds)}"
+            )
+        elif down_seconds >= self.monitor_down_alert_seconds:
+            raw_reason = "monitor_down"
+            raw_title = f"MONITOR DOWN {max(1, int(down_seconds // 60))}m+"
+
+        raw_active = bool(raw_reason)
+        latched = False
+        if raw_active:
+            self.unhealthy_since = self.unhealthy_since or timestamp
+            self.healthy_since = None
+            self.latched_title = raw_title
+            self.latched_reason = raw_reason
+        elif self.unhealthy_since is not None:
+            if monitor_available:
+                self.healthy_since = self.healthy_since or timestamp
+                if timestamp - self.healthy_since >= self.healthy_clear_seconds:
+                    self.unhealthy_since = None
+                    self.healthy_since = None
+                    self.latched_title = ""
+                    self.latched_reason = ""
+                else:
+                    latched = True
+            else:
+                self.healthy_since = None
+                latched = True
+
+        active = raw_active or latched
+        reason = raw_reason or (self.latched_reason if latched else "")
+        title = raw_title or (self.latched_title if latched else "")
+        return {
+            "active": active,
+            "soundable": raw_active,
+            "latched": latched,
+            "reason": reason,
+            "title": title,
+            "crash_count_window": crash_count,
+            "crash_alert_count": self.crash_alert_count,
+            "window_seconds": self.window_seconds,
+            "monitor_down_seconds": round(down_seconds, 1),
+            "monitor_down_alert_seconds": self.monitor_down_alert_seconds,
+            "unhealthy_since": self.unhealthy_since,
+            "healthy_since": self.healthy_since,
+            "recent_events": events[-5:],
+        }
+
+    def should_sound(self, snapshot: dict[str, Any], now: float | None = None) -> bool:
+        if not bool(snapshot.get("active", False)):
+            return False
+        if not bool(snapshot.get("soundable", False)):
+            return False
+        timestamp = time.time() if now is None else float(now)
+        if self.last_sound_at is None:
+            return True
+        return timestamp - self.last_sound_at >= self.realert_seconds
+
+    def mark_sounded(self, now: float | None = None) -> None:
+        self.last_sound_at = time.time() if now is None else float(now)
 
 
 def system_volume_button_state(warning_active: bool, ignored: bool, pulse_on: bool) -> dict[str, Any]:
@@ -1991,6 +2144,7 @@ def write_watchdog_heartbeat(
     child_pid: int | None,
     restart_count: int,
     status: str,
+    monitor_health: dict[str, Any] | None = None,
 ) -> None:
     path = resolve_config_path(
         config,
@@ -2005,6 +2159,8 @@ def write_watchdog_heartbeat(
         "restart_count": restart_count,
         "status": status,
     }
+    if monitor_health is not None:
+        payload["monitor_health"] = monitor_health
     temp_path = path.with_suffix(path.suffix + ".tmp")
     temp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
     temp_path.replace(path)
@@ -2048,6 +2204,36 @@ def watchdog_alert(config: dict[str, Any], logger: logging.Logger, message: str)
     logger.error(full_message)
     play_watchdog_sound()
     send_watchdog_telegram(config, logger, full_message)
+
+
+def watchdog_notice(logger: logging.Logger, message: str) -> None:
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    full_message = f"[{stamp}] Maple Alert watchdog: {message}"
+    print(full_message, flush=True)
+    logger.warning(full_message)
+
+
+def monitor_heartbeat_available(path: Path, stale_seconds: float) -> bool:
+    age = heartbeat_age(path)
+    return age is not None and age <= stale_seconds
+
+
+def maybe_watchdog_health_alarm(
+    config: dict[str, Any],
+    logger: logging.Logger,
+    tracker: WatchdogFailureTracker,
+    snapshot: dict[str, Any],
+    message: str,
+) -> bool:
+    now = time.time()
+    if not tracker.should_sound(snapshot, now):
+        return False
+    title = watchdog_health_title(snapshot)
+    if title:
+        message = f"{message}; {title}"
+    watchdog_alert(config, logger, message)
+    tracker.mark_sounded(now)
+    return True
 
 
 def child_monitor_command(config_path: Path, parent_pid: int | None = None) -> list[str]:
@@ -2103,7 +2289,9 @@ def run_watchdog(config: dict[str, Any], config_path: Path) -> int:
 
     restart_count = 0
     child: subprocess.Popen[Any] | None = None
-    write_watchdog_heartbeat(config, None, restart_count, "starting")
+    failure_tracker = WatchdogFailureTracker(config)
+    health = failure_tracker.update(False)
+    write_watchdog_heartbeat(config, None, restart_count, "starting", health)
     try:
         while True:
             if quit_requested(config, started_at_epoch):
@@ -2123,7 +2311,10 @@ def run_watchdog(config: dict[str, Any], config_path: Path) -> int:
             child = subprocess.Popen(command, cwd=str(config_path.parent))
             child_started = time.monotonic()
             logger.info("Started monitor child pid=%s", child.pid)
-            write_watchdog_heartbeat(config, child.pid, restart_count, "watching")
+            health = failure_tracker.update(
+                monitor_heartbeat_available(heartbeat_path, stale_seconds)
+            )
+            write_watchdog_heartbeat(config, child.pid, restart_count, "watching", health)
 
             while True:
                 if quit_requested(config, started_at_epoch):
@@ -2137,43 +2328,104 @@ def run_watchdog(config: dict[str, Any], config_path: Path) -> int:
                     stop_child(child, logger)
                     return 0
 
-                write_watchdog_heartbeat(config, child.pid, restart_count, "watching")
                 time.sleep(check_interval)
+                monitor_available = monitor_heartbeat_available(heartbeat_path, stale_seconds)
+                health = failure_tracker.update(monitor_available)
+                write_watchdog_heartbeat(config, child.pid, restart_count, "watching", health)
+                maybe_watchdog_health_alarm(
+                    config,
+                    logger,
+                    failure_tracker,
+                    health,
+                    "monitor health is degraded",
+                )
                 exit_code = child.poll()
                 if exit_code is not None:
                     restart_count += 1
-                    write_watchdog_heartbeat(config, child.pid, restart_count, "monitor_exited")
-                    watchdog_alert(
+                    failure_tracker.record_abnormal("monitor_exited", exit_code=exit_code)
+                    health = failure_tracker.update(False)
+                    write_watchdog_heartbeat(config, child.pid, restart_count, "monitor_exited", health)
+                    message = (
+                        f"monitor exited with code {exit_code}; restarting in "
+                        f"{restart_delay:.1f}s (restart #{restart_count})"
+                    )
+                    if not maybe_watchdog_health_alarm(
                         config,
                         logger,
-                        f"monitor exited with code {exit_code}; restarting in {restart_delay:.1f}s (restart #{restart_count})",
-                    )
+                        failure_tracker,
+                        health,
+                        message,
+                    ):
+                        watchdog_notice(
+                            logger,
+                            (
+                                f"{message}; audible alarm suppressed "
+                                f"({health['crash_count_window']}/{health['crash_alert_count']} "
+                                f"crashes in {minutes_label(health['window_seconds']).lower()}; "
+                                f"monitor_down={health['monitor_down_seconds']}s)"
+                            ),
+                        )
                     break
 
                 if heartbeat_path.exists():
                     heartbeat_age = time.time() - heartbeat_path.stat().st_mtime
                     if heartbeat_age > stale_seconds:
                         restart_count += 1
-                        write_watchdog_heartbeat(config, child.pid, restart_count, "monitor_stale")
-                        watchdog_alert(
+                        failure_tracker.record_abnormal("monitor_stale")
+                        health = failure_tracker.update(False)
+                        write_watchdog_heartbeat(config, child.pid, restart_count, "monitor_stale", health)
+                        message = (
+                            f"monitor heartbeat is stale ({heartbeat_age:.1f}s old); "
+                            f"restarting in {restart_delay:.1f}s (restart #{restart_count})"
+                        )
+                        if not maybe_watchdog_health_alarm(
                             config,
                             logger,
-                            f"monitor heartbeat is stale ({heartbeat_age:.1f}s old); restarting in {restart_delay:.1f}s (restart #{restart_count})",
-                        )
+                            failure_tracker,
+                            health,
+                            message,
+                        ):
+                            watchdog_notice(
+                                logger,
+                                (
+                                    f"{message}; audible alarm suppressed "
+                                    f"({health['crash_count_window']}/{health['crash_alert_count']} "
+                                    f"failures in {minutes_label(health['window_seconds']).lower()}; "
+                                    f"monitor_down={health['monitor_down_seconds']}s)"
+                                ),
+                            )
                         stop_child(child, logger)
                         break
                 elif time.monotonic() - child_started > startup_grace:
                     restart_count += 1
-                    write_watchdog_heartbeat(config, child.pid, restart_count, "monitor_missing_heartbeat")
-                    watchdog_alert(
+                    failure_tracker.record_abnormal("monitor_missing_heartbeat")
+                    health = failure_tracker.update(False)
+                    write_watchdog_heartbeat(config, child.pid, restart_count, "monitor_missing_heartbeat", health)
+                    message = (
+                        f"monitor has not written a heartbeat after {startup_grace:.1f}s; "
+                        f"restarting in {restart_delay:.1f}s (restart #{restart_count})"
+                    )
+                    if not maybe_watchdog_health_alarm(
                         config,
                         logger,
-                        f"monitor has not written a heartbeat after {startup_grace:.1f}s; restarting in {restart_delay:.1f}s (restart #{restart_count})",
-                    )
+                        failure_tracker,
+                        health,
+                        message,
+                    ):
+                        watchdog_notice(
+                            logger,
+                            (
+                                f"{message}; audible alarm suppressed "
+                                f"({health['crash_count_window']}/{health['crash_alert_count']} "
+                                f"failures in {minutes_label(health['window_seconds']).lower()}; "
+                                f"monitor_down={health['monitor_down_seconds']}s)"
+                            ),
+                        )
                     stop_child(child, logger)
                     break
 
-            write_watchdog_heartbeat(config, None, restart_count, "restarting")
+            health = failure_tracker.update(False)
+            write_watchdog_heartbeat(config, None, restart_count, "restarting", health)
             time.sleep(restart_delay)
     finally:
         if child is not None:
@@ -2656,6 +2908,12 @@ def run_overlay(config: dict[str, Any]) -> int:
         status = payload.get("alert_status")
         return status if isinstance(status, dict) else {}
 
+    def watchdog_health_from_heartbeat(payload: dict[str, Any], age: float | None) -> dict[str, Any]:
+        if age is None or age > stale_seconds:
+            return {}
+        health = payload.get("monitor_health")
+        return health if isinstance(health, dict) else {}
+
     def active_alert_label(active_alert: str | None) -> str:
         if active_alert == "lie_detector":
             return "LIE DETECTOR ALERT"
@@ -2711,9 +2969,12 @@ def run_overlay(config: dict[str, Any]) -> int:
         monitor_age = heartbeat_age(monitor_heartbeat)
         watchdog_age = heartbeat_age(watchdog_heartbeat)
         monitor_payload = read_monitor_heartbeat()
+        watchdog_payload = read_json_file(watchdog_heartbeat)
         refresh_capture_notice(monitor_payload)
         maple_missing = maple_missing_from_heartbeat(monitor_payload, monitor_age)
         alert_status = alert_status_from_heartbeat(monitor_payload, monitor_age)
+        watchdog_health = watchdog_health_from_heartbeat(watchdog_payload, watchdog_age)
+        watchdog_health_active = bool(watchdog_health.get("active", False))
         active_alert = alert_status.get("active_alert")
         ages = [age for age in (monitor_age, watchdog_age) if age is not None]
         worst_age = max(ages, default=None)
@@ -2733,7 +2994,12 @@ def run_overlay(config: dict[str, Any]) -> int:
         )
 
         pulse_on = frame["i"] % 4 in (0, 1)
-        if maple_missing:
+        if watchdog_health_active:
+            status = "MONITOR"
+            dot_color = "#ff3b30" if pulse_on else "#7a1815"
+            text_color = "#ffe3e0"
+            bg_color = "#451112" if pulse_on else "#111418"
+        elif maple_missing:
             status = "NO MAPLE"
             dot_color = "#ff3b30" if pulse_on else "#7a1815"
             text_color = "#ffe3e0"
@@ -2766,7 +3032,9 @@ def run_overlay(config: dict[str, Any]) -> int:
 
         spin = spinner[frame["i"] % len(spinner)]
         frame["i"] += 1
-        if maple_missing:
+        if watchdog_health_active:
+            text = overlay_watchdog_health_text(watchdog_health, spin)
+        elif maple_missing:
             text = f"MAPLE NOT DETECTED {spin}"
         elif active_alert:
             text = f"{active_alert_label(str(active_alert))} {spin}"
