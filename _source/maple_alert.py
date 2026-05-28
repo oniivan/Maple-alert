@@ -24,6 +24,9 @@ import cv2
 import mss
 import numpy as np
 
+APP_NAME = "Maple Alert"
+APP_VERSION = "0.4.0"
+RELEASE_MANIFEST_NAME = "release_manifest.json"
 SYSTEM_VOLUME_WARNING_PERCENT = 70
 OVERLAY_WIDTH = 340
 OVERLAY_HEALTH_HEIGHT = 34
@@ -2064,6 +2067,29 @@ def build_redacted_config(config: dict[str, Any]) -> dict[str, Any]:
     if notification_settings:
         redacted["runtime_notification_settings"] = redact_config_value("runtime_notification_settings", notification_settings)
     return redacted
+
+
+def read_release_manifest(base_dir: Path) -> dict[str, Any]:
+    path = base_dir / RELEASE_MANIFEST_NAME
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def build_info_payload(base_dir: Path) -> dict[str, Any]:
+    manifest = read_release_manifest(base_dir)
+    return {
+        "app_name": APP_NAME,
+        "app_version": APP_VERSION,
+        "release_manifest": manifest,
+    }
+
+
+def run_build_info(base_dir: Path) -> int:
+    print(json.dumps(build_info_payload(base_dir), indent=2, sort_keys=True), flush=True)
+    return 0
 
 
 def config_issue(severity: str, code: str, path: str, message: str) -> dict[str, str]:
@@ -4221,6 +4247,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Local visual alert monitor for CAPTCHA and minimap red markers."
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {APP_VERSION}")
     parser.add_argument("--config", default="config.toml", help="Path to config TOML file.")
     parser.add_argument("--debug", action="store_true", help="Show live ROI debug windows.")
     parser.add_argument(
@@ -4271,6 +4298,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Check config values and print redacted errors/warnings.",
     )
     parser.add_argument(
+        "--build-info",
+        action="store_true",
+        help="Print app version and release manifest metadata as JSON.",
+    )
+    parser.add_argument(
         "--parent-pid",
         type=int,
         default=0,
@@ -4289,6 +4321,12 @@ def main(argv: list[str] | None = None) -> int:
     config_path = Path(args.config).expanduser()
     if args.config == "config.toml" and getattr(sys, "frozen", False):
         config_path = Path(sys.executable).resolve().with_name("config.toml")
+    if args.build_info:
+        if getattr(sys, "frozen", False):
+            base_dir = Path(sys.executable).resolve().parent
+        else:
+            base_dir = config_path.resolve().parent
+        return run_build_info(base_dir)
     config = load_config(config_path)
     config["_parent_pid"] = int(getattr(args, "parent_pid", 0) or 0)
     if args.setup_check:

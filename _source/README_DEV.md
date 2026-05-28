@@ -69,6 +69,12 @@ Validate config values without printing credentials:
 python .\maple_alert.py --config .\config.toml --validate-config
 ```
 
+Print package build metadata:
+
+```powershell
+python .\maple_alert.py --config .\config.toml --build-info
+```
+
 Write a redacted support diagnostics bundle:
 
 ```powershell
@@ -157,6 +163,8 @@ MapleAlert.exe
 _internal\
 alert_sounds\
 config.toml
+release_manifest.json
+SHA256SUMS.txt
 ```
 
 To move it to another Windows PC, copy or download the repo folder, then double-click `START_MAPLE_ALERT.bat`. If the new PC has a different resolution, scaling, or game window size, edit `config.toml` and use the commands in the calibration section below.
