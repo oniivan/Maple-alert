@@ -29,6 +29,8 @@ def test_volume_meters_are_side_by_side_with_same_width() -> None:
 
     assert layout["width"] == 340
     assert OVERLAY_PLAYER_VOLUME_LABEL == "PLAYER DETECT VOLUME"
+    assert layout["notify_button"] == (270, 5, 296, 21)
+    assert layout["notify_button"][2] < layout["minimize_button"]["box"][0]
     assert lie["outline"][1] == player["outline"][1]
     assert lie["outline"][3] == player["outline"][3]
     assert lie["outline"][2] < player["outline"][0]

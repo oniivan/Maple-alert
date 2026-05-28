@@ -135,6 +135,20 @@ status_interval_seconds = 15
 bot_token = ""
 chat_id = ""
 
+[discord]
+# Discord DM alerts need a bot token and numeric user ID. The bot must share a server with the user.
+# You can also set DISCORD_BOT_TOKEN, DISCORD_USER_ID, or DISCORD_WEBHOOK_URL environment variables.
+enabled = false
+bot_token = ""
+user_id = ""
+# Optional: sends to a Discord channel webhook instead of a DM.
+webhook_url = ""
+
+[notifications]
+# Remote alerts are off until enabled here or in the overlay DM settings dialog.
+settings_file = "runtime/notification_settings.json"
+remote_enabled = false
+
 [watchdog]
 heartbeat_file = "runtime/heartbeat.json"
 watchdog_heartbeat_file = "runtime/watchdog_heartbeat.json"

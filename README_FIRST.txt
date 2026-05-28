@@ -18,6 +18,8 @@ of the overlay to quit the whole alert stack.
 The overlay has a TEST button plus separate LIE DETECT VOLUME and PLAYER
 DETECT VOLUME filled meters. Click TEST to play the lie alert first, then the
 player alert. Click/drag either meter to adjust that WAV volume up to 250%.
+Click DM on the top bar to add Discord or Telegram remote alert details and
+send a test message.
 If the top bar flashes yellow for system volume, Windows is muted or below 70%.
 The IGNORE button appears only while that warning is active. Click it to suppress
 the current warning; a flashing WARN button remains while that warning is ignored.
@@ -33,5 +35,5 @@ starts the crash/hang watchdog layers.
 
 Optional:
 
-  Edit config.toml to tune thresholds or add Telegram.
+  Edit config.toml to tune thresholds or add Discord/Telegram.
   Open README.md for a short feature list.

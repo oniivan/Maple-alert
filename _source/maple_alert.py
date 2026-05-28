@@ -152,6 +152,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "status_interval_seconds": 15,
     },
     "telegram": {"bot_token": "", "chat_id": ""},
+    "discord": {
+        "enabled": False,
+        "bot_token": "",
+        "user_id": "",
+        "webhook_url": "",
+    },
+    "notifications": {
+        "settings_file": "runtime/notification_settings.json",
+        "remote_enabled": False,
+    },
     "watchdog": {
         "heartbeat_file": "runtime/heartbeat.json",
         "watchdog_heartbeat_file": "runtime/watchdog_heartbeat.json",
@@ -294,6 +304,7 @@ def overlay_control_layout() -> dict[str, Any]:
         "health_height": OVERLAY_HEALTH_HEIGHT,
         "full_height": OVERLAY_FULL_HEIGHT,
         "collapsed_height": OVERLAY_COLLAPSED_HEIGHT,
+        "notify_button": (270, 5, 296, 21),
         "quit_button": (320, 5, 336, 21),
         "minimize_button": {
             "box": (300, 5, 316, 21),
@@ -577,6 +588,15 @@ def load_config(path: Path) -> dict[str, Any]:
         config["telegram"]["bot_token"] = token
     if chat_id:
         config["telegram"]["chat_id"] = chat_id
+    discord_token = os.getenv("DISCORD_BOT_TOKEN")
+    discord_user_id = os.getenv("DISCORD_USER_ID")
+    discord_webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
+    if discord_token:
+        config["discord"]["bot_token"] = discord_token
+    if discord_user_id:
+        config["discord"]["user_id"] = discord_user_id
+    if discord_webhook_url:
+        config["discord"]["webhook_url"] = discord_webhook_url
 
     config["_config_dir"] = str(path.resolve().parent)
     return config
@@ -700,6 +720,171 @@ def write_ignore_system_volume_warning(config: dict[str, Any], ignore: bool) -> 
     payload = read_alert_settings_payload(config)
     payload["ignore_system_volume_warning"] = bool(ignore)
     write_alert_settings_payload(config, payload)
+
+
+def notification_settings_path(config: dict[str, Any]) -> Path:
+    return resolve_config_path(
+        config,
+        str(config.get("notifications", {}).get("settings_file", "runtime/notification_settings.json")),
+    )
+
+
+def read_notification_settings(config: dict[str, Any]) -> dict[str, Any]:
+    path = notification_settings_path(config)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def write_notification_settings(config: dict[str, Any], payload: dict[str, Any]) -> None:
+    path = notification_settings_path(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    updated_payload = dict(payload)
+    updated_payload["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    updated_payload["pid"] = os.getpid()
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(updated_payload, sort_keys=True), encoding="utf-8")
+    temp_path.replace(path)
+
+
+def _runtime_service_settings(config: dict[str, Any], service: str) -> dict[str, Any]:
+    settings = read_notification_settings(config)
+    service_settings = settings.get(service, {})
+    return service_settings if isinstance(service_settings, dict) else {}
+
+
+def notification_value(config: dict[str, Any], service: str, key: str) -> str:
+    runtime_value = _runtime_service_settings(config, service).get(key)
+    if runtime_value is not None:
+        return str(runtime_value).strip()
+    return str(config.get(service, {}).get(key, "")).strip()
+
+
+def remote_notifications_enabled(config: dict[str, Any]) -> bool:
+    settings = read_notification_settings(config)
+    if "remote_enabled" in settings:
+        return bool(settings.get("remote_enabled"))
+    notifications_cfg = config.get("notifications", {})
+    return bool(notifications_cfg.get("remote_enabled", False)) or not bool(
+        config.get("alerts", {}).get("safe_mode", True)
+    )
+
+
+def notification_service_enabled(config: dict[str, Any], service: str) -> bool:
+    if not remote_notifications_enabled(config):
+        return False
+    runtime_settings = _runtime_service_settings(config, service)
+    service_cfg = config.get(service, {})
+    if service == "telegram":
+        if "enabled" in runtime_settings:
+            enabled = bool(runtime_settings.get("enabled"))
+        else:
+            enabled = bool(
+                service_cfg.get("enabled", False)
+                or config.get("alerts", {}).get("telegram_enabled", False)
+            )
+        return enabled and bool(notification_value(config, "telegram", "bot_token")) and bool(
+            notification_value(config, "telegram", "chat_id")
+        )
+    if service == "discord":
+        enabled = bool(runtime_settings.get("enabled", service_cfg.get("enabled", False)))
+        has_webhook = bool(notification_value(config, "discord", "webhook_url"))
+        has_dm = bool(notification_value(config, "discord", "bot_token")) and bool(
+            notification_value(config, "discord", "user_id")
+        )
+        return enabled and (has_webhook or has_dm)
+    return False
+
+
+def send_telegram_notification(
+    config: dict[str, Any],
+    logger: logging.Logger,
+    message: str,
+    post_func: Any | None = None,
+) -> bool:
+    if not notification_service_enabled(config, "telegram"):
+        logger.info("Telegram skipped because notifications are disabled or token/chat_id are not configured")
+        return False
+
+    token = notification_value(config, "telegram", "bot_token")
+    chat_id = notification_value(config, "telegram", "chat_id")
+    try:
+        if post_func is None:
+            import requests
+
+            post_func = requests.post
+
+        response = post_func(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            data={"chat_id": chat_id, "text": message},
+            timeout=8,
+        )
+        response.raise_for_status()
+        logger.info("Telegram message sent")
+        return True
+    except Exception as exc:
+        logger.warning("Telegram send failed: %s", exc)
+        return False
+
+
+def send_discord_notification(
+    config: dict[str, Any],
+    logger: logging.Logger,
+    message: str,
+    post_func: Any | None = None,
+) -> bool:
+    if not notification_service_enabled(config, "discord"):
+        logger.info("Discord skipped because notifications are disabled or credentials are not configured")
+        return False
+
+    try:
+        if post_func is None:
+            import requests
+
+            post_func = requests.post
+
+        webhook_url = notification_value(config, "discord", "webhook_url")
+        if webhook_url:
+            response = post_func(webhook_url, json={"content": message}, timeout=8)
+            response.raise_for_status()
+            logger.info("Discord webhook message sent")
+            return True
+
+        token = notification_value(config, "discord", "bot_token")
+        user_id = notification_value(config, "discord", "user_id")
+        headers = {
+            "Authorization": f"Bot {token}",
+            "Content-Type": "application/json",
+        }
+        dm_response = post_func(
+            "https://discord.com/api/v10/users/@me/channels",
+            headers=headers,
+            json={"recipient_id": user_id},
+            timeout=8,
+        )
+        dm_response.raise_for_status()
+        channel_id = str(dm_response.json().get("id", "")).strip()
+        if not channel_id:
+            raise RuntimeError("Discord did not return a DM channel id")
+        message_response = post_func(
+            f"https://discord.com/api/v10/channels/{channel_id}/messages",
+            headers=headers,
+            json={"content": message},
+            timeout=8,
+        )
+        message_response.raise_for_status()
+        logger.info("Discord DM message sent")
+        return True
+    except Exception as exc:
+        logger.warning("Discord send failed: %s", exc)
+        return False
+
+
+def send_remote_notifications(config: dict[str, Any], logger: logging.Logger, message: str) -> None:
+    send_telegram_notification(config, logger, message)
+    send_discord_notification(config, logger, message)
 
 
 def setup_logging(config: dict[str, Any]) -> logging.Logger:
@@ -1597,7 +1782,7 @@ class AlertManager:
         print(message, flush=True)
         self.logger.info("Alert fired: %s", message)
         self._play_sound(kind)
-        self._send_telegram(message)
+        send_remote_notifications(self.config, self.logger, message)
         self.last_alert[kind] = time.monotonic()
 
     def _message_for(self, kind: str, result: DetectionResult) -> str:
@@ -1618,35 +1803,6 @@ class AlertManager:
             play_alert_sound_pattern(kind, read_alert_volume_percent(self.config, kind=kind))
         except Exception as exc:
             self.logger.warning("Could not play alert sound: %s", exc)
-
-    def _send_telegram(self, message: str) -> None:
-        alerts_cfg = self.config["alerts"]
-        if alerts_cfg["safe_mode"]:
-            self.logger.info("Telegram skipped because safe_mode=true")
-            return
-        if not alerts_cfg["telegram_enabled"]:
-            return
-
-        token = str(self.config["telegram"]["bot_token"]).strip()
-        chat_id = str(self.config["telegram"]["chat_id"]).strip()
-        if not token or not chat_id:
-            self.logger.info("Telegram skipped because token/chat_id are not configured")
-            return
-
-        try:
-            import requests
-
-            url = f"https://api.telegram.org/bot{token}/sendMessage"
-            response = requests.post(
-                url,
-                data={"chat_id": chat_id, "text": message},
-                timeout=8,
-            )
-            response.raise_for_status()
-            self.logger.info("Telegram message sent")
-        except Exception as exc:
-            self.logger.warning("Telegram send failed: %s", exc)
-
 
 def draw_captcha_debug(bgr: np.ndarray, result: DetectionResult) -> np.ndarray:
     out = bgr.copy()
@@ -2176,37 +2332,13 @@ def play_watchdog_sound() -> None:
         pass
 
 
-def send_watchdog_telegram(config: dict[str, Any], logger: logging.Logger, message: str) -> None:
-    if config["alerts"].get("safe_mode", True) or not config["alerts"].get("telegram_enabled", True):
-        logger.info("Watchdog Telegram skipped because safe_mode=true or telegram_enabled=false")
-        return
-
-    token = str(config["telegram"].get("bot_token", "")).strip()
-    chat_id = str(config["telegram"].get("chat_id", "")).strip()
-    if not token or not chat_id:
-        logger.info("Watchdog Telegram skipped because token/chat_id are not configured")
-        return
-
-    try:
-        import requests
-
-        response = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            data={"chat_id": chat_id, "text": message},
-            timeout=8,
-        )
-        response.raise_for_status()
-    except Exception as exc:
-        logger.warning("Watchdog Telegram send failed: %s", exc)
-
-
 def watchdog_alert(config: dict[str, Any], logger: logging.Logger, message: str) -> None:
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     full_message = f"[{stamp}] Maple Alert watchdog: {message}"
     print(full_message, flush=True)
     logger.error(full_message)
     play_watchdog_sound()
-    send_watchdog_telegram(config, logger, full_message)
+    send_remote_notifications(config, logger, full_message)
 
 
 def watchdog_notice(logger: logging.Logger, message: str) -> None:
@@ -2505,6 +2637,16 @@ def run_overlay(config: dict[str, Any]) -> int:
     outer_bg = canvas.create_rectangle(0, 0, OVERLAY_WIDTH - 1, full_height - 1, fill="#111418", outline="#2b323b")
     health_bg = canvas.create_rectangle(0, 0, OVERLAY_WIDTH - 1, OVERLAY_HEALTH_HEIGHT, fill="#111418", outline="#2b323b")
     dot = canvas.create_oval(10, 11, 22, 23, fill="#24d15d", outline="")
+    notify_box = layout["notify_button"]
+    notify_button = canvas.create_rectangle(*notify_box, fill="#151d27", outline="#3b4654")
+    notify_label = canvas.create_text(
+        (notify_box[0] + notify_box[2]) // 2,
+        (notify_box[1] + notify_box[3]) // 2,
+        anchor="center",
+        fill="#c7d2e0",
+        font=("Consolas", max(7, font_size - 3), "bold"),
+        text="DM",
+    )
     min_box = layout["minimize_button"]["box"]
     minimize_button = canvas.create_rectangle(*min_box, fill="#17221b", outline="#3b704d")
     minimize_label = canvas.create_text(
@@ -2612,6 +2754,7 @@ def run_overlay(config: dict[str, Any]) -> int:
         "resolution_notice_until": 0.0,
         "minimized": False,
         "current_height": full_height,
+        "notification_dialog": None,
     }
     drawer_items = [
         volume_warning_bg,
@@ -2690,6 +2833,9 @@ def run_overlay(config: dict[str, Any]) -> int:
         if point_in_box(event_x, event_y, tuple(layout["quit_button"])):
             drag_state["mode"] = "quit"
             return
+        if point_in_box(event_x, event_y, tuple(layout["notify_button"])):
+            drag_state["mode"] = "notify"
+            return
         if point_in_box(event_x, event_y, tuple(layout["minimize_button"]["box"])):
             drag_state["mode"] = "minimize"
             return
@@ -2728,6 +2874,8 @@ def run_overlay(config: dict[str, Any]) -> int:
             return
         if drag_state.get("mode") == "quit":
             return
+        if drag_state.get("mode") == "notify":
+            return
         if drag_state.get("mode") == "minimize":
             return
         if drag_state.get("mode") == "test":
@@ -2739,6 +2887,10 @@ def run_overlay(config: dict[str, Any]) -> int:
     def on_release(_: Any) -> None:
         if drag_state.get("mode") == "quit":
             request_full_quit()
+            drag_state["mode"] = "drag"
+            return
+        if drag_state.get("mode") == "notify":
+            open_notification_settings_dialog()
             drag_state["mode"] = "drag"
             return
         if drag_state.get("mode") == "minimize":
@@ -2758,6 +2910,183 @@ def run_overlay(config: dict[str, Any]) -> int:
         except Exception as exc:
             print(f"Could not write quit request: {exc}", flush=True)
         root.destroy()
+
+    def notification_entry_value(settings: dict[str, Any], service: str, key: str) -> str:
+        service_settings = settings.get(service, {})
+        if isinstance(service_settings, dict) and service_settings.get(key) is not None:
+            return str(service_settings.get(key, ""))
+        return str(config.get(service, {}).get(key, ""))
+
+    def open_notification_settings_dialog() -> None:
+        existing = state.get("notification_dialog")
+        try:
+            if existing is not None and existing.winfo_exists():
+                existing.lift()
+                return
+        except Exception:
+            pass
+
+        settings = read_notification_settings(config)
+        dialog = tk.Toplevel(root)
+        state["notification_dialog"] = dialog
+        dialog.title("Maple Alert Notifications")
+        dialog.configure(bg="#111418")
+        dialog.attributes("-topmost", True)
+        dialog.resizable(False, False)
+        dialog.geometry(f"+{root.winfo_x()}+{root.winfo_y() + int(state.get('current_height', full_height)) + 8}")
+
+        remote_var = tk.BooleanVar(value=remote_notifications_enabled(config))
+        telegram_settings = settings.get("telegram", {})
+        discord_settings = settings.get("discord", {})
+        telegram_enabled_var = tk.BooleanVar(
+            value=bool(
+                telegram_settings.get(
+                    "enabled",
+                    config.get("alerts", {}).get("telegram_enabled", False),
+                )
+            )
+        )
+        discord_enabled_var = tk.BooleanVar(
+            value=bool(discord_settings.get("enabled", config.get("discord", {}).get("enabled", False)))
+        )
+        entries: dict[str, tk.Entry] = {}
+
+        def add_label(text: str, row: int, column: int = 0, columnspan: int = 1) -> None:
+            tk.Label(
+                dialog,
+                text=text,
+                bg="#111418",
+                fg="#d7fbe1",
+                font=("Consolas", 9, "bold"),
+            ).grid(row=row, column=column, columnspan=columnspan, sticky="w", padx=10, pady=(8, 2))
+
+        def add_entry(service: str, key: str, row: int, label_text: str, show: str = "") -> None:
+            add_label(label_text, row)
+            entry = tk.Entry(
+                dialog,
+                width=38,
+                bg="#10151b",
+                fg="#f3fff6",
+                insertbackground="#f3fff6",
+                relief="flat",
+                show=show,
+                font=("Consolas", 9),
+            )
+            entry.insert(0, notification_entry_value(settings, service, key))
+            entry.grid(row=row, column=1, padx=10, pady=(8, 2))
+            entries[f"{service}.{key}"] = entry
+
+        tk.Checkbutton(
+            dialog,
+            text="ENABLE REMOTE ALERTS",
+            variable=remote_var,
+            bg="#111418",
+            fg="#fff2b0",
+            activebackground="#111418",
+            activeforeground="#fff2b0",
+            selectcolor="#332b0e",
+            font=("Consolas", 9, "bold"),
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 2))
+
+        tk.Checkbutton(
+            dialog,
+            text="TELEGRAM",
+            variable=telegram_enabled_var,
+            bg="#111418",
+            fg="#aab4c0",
+            activebackground="#111418",
+            activeforeground="#d7fbe1",
+            selectcolor="#17221b",
+            font=("Consolas", 9, "bold"),
+        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=10, pady=(6, 0))
+        add_entry("telegram", "bot_token", 2, "Bot token", "*")
+        add_entry("telegram", "chat_id", 3, "Chat ID")
+
+        tk.Checkbutton(
+            dialog,
+            text="DISCORD",
+            variable=discord_enabled_var,
+            bg="#111418",
+            fg="#aab4c0",
+            activebackground="#111418",
+            activeforeground="#d7fbe1",
+            selectcolor="#17221b",
+            font=("Consolas", 9, "bold"),
+        ).grid(row=4, column=0, columnspan=2, sticky="w", padx=10, pady=(8, 0))
+        add_entry("discord", "bot_token", 5, "Bot token", "*")
+        add_entry("discord", "user_id", 6, "User ID")
+        add_entry("discord", "webhook_url", 7, "Webhook URL")
+
+        status_var = tk.StringVar(value="")
+        status_label = tk.Label(
+            dialog,
+            textvariable=status_var,
+            bg="#111418",
+            fg="#aab4c0",
+            font=("Consolas", 8, "bold"),
+        )
+        status_label.grid(row=8, column=0, columnspan=2, sticky="w", padx=10, pady=(8, 0))
+
+        def collect_payload() -> dict[str, Any]:
+            return {
+                "remote_enabled": bool(remote_var.get()),
+                "telegram": {
+                    "enabled": bool(telegram_enabled_var.get()),
+                    "bot_token": entries["telegram.bot_token"].get().strip(),
+                    "chat_id": entries["telegram.chat_id"].get().strip(),
+                },
+                "discord": {
+                    "enabled": bool(discord_enabled_var.get()),
+                    "bot_token": entries["discord.bot_token"].get().strip(),
+                    "user_id": entries["discord.user_id"].get().strip(),
+                    "webhook_url": entries["discord.webhook_url"].get().strip(),
+                },
+            }
+
+        def save_settings() -> None:
+            write_notification_settings(config, collect_payload())
+            status_var.set("Saved")
+
+        def test_settings() -> None:
+            write_notification_settings(config, collect_payload())
+            status_var.set("Sending test...")
+
+            def worker() -> None:
+                logger = logging.getLogger("maple_alert_overlay_notify")
+                logger.addHandler(logging.NullHandler())
+                sent_telegram = send_telegram_notification(
+                    config,
+                    logger,
+                    f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Maple Alert test: Telegram notifications are configured.",
+                )
+                sent_discord = send_discord_notification(
+                    config,
+                    logger,
+                    f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Maple Alert test: Discord notifications are configured.",
+                )
+                result = "Test sent" if (sent_telegram or sent_discord) else "Nothing sent; check IDs/tokens"
+                try:
+                    dialog.after(0, lambda: status_var.set(result))
+                except Exception:
+                    pass
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        button_frame = tk.Frame(dialog, bg="#111418")
+        button_frame.grid(row=9, column=0, columnspan=2, sticky="e", padx=10, pady=10)
+        for text, command in (("SAVE", save_settings), ("TEST", test_settings), ("CLOSE", dialog.destroy)):
+            tk.Button(
+                button_frame,
+                text=text,
+                command=command,
+                bg="#1b2430",
+                fg="#d7fbe1",
+                activebackground="#243244",
+                activeforeground="#ffffff",
+                relief="flat",
+                font=("Consolas", 8, "bold"),
+                padx=10,
+            ).pack(side="left", padx=4)
 
     def toggle_system_volume_warning() -> None:
         ignored = not bool(state.get("ignore_system_volume_warning", False))
@@ -3069,6 +3398,8 @@ def run_overlay(config: dict[str, Any]) -> int:
         draw_system_volume_button(system_volume_needs_attention, system_volume_ignored, pulse_on)
         canvas.tag_raise(quit_button)
         canvas.tag_raise(quit_label)
+        canvas.tag_raise(notify_button)
+        canvas.tag_raise(notify_label)
         canvas.tag_raise(minimize_button)
         canvas.tag_raise(minimize_label)
         state["alert_volumes"]["captcha"] = read_alert_volume_percent(config, kind="captcha")
