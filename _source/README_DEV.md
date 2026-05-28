@@ -57,6 +57,22 @@ List visible windows to confirm the title substring:
 python .\maple_alert.py --list-windows
 ```
 
+Print a player-facing setup readiness report:
+
+```powershell
+python .\maple_alert.py --config .\config.toml --setup-check
+```
+
+Write a redacted support diagnostics bundle:
+
+```powershell
+python .\maple_alert.py --config .\config.toml --diagnostics
+```
+
+Diagnostics are written under `runtime\diagnostics\` by default and include
+text/JSON summaries only. Remote alert tokens, IDs, and webhooks are redacted,
+and screenshots/debug crops are not included.
+
 Capture one sample and save cropped ROIs to `debug_crops`:
 
 ```powershell
@@ -111,6 +127,11 @@ The repo folder also includes:
 - `README_FIRST.txt` - short instructions for the recipient.
 - `README.md` - full technical notes.
 - `_internal\` - packaged dependencies and the hidden supervisor script.
+
+Optional support launchers live in `_debug_tools\`:
+
+- `Setup Check.bat` - prints a readiness report for folder files, target window, scaling, audio, alert volumes, and remote alerts.
+- `Create Diagnostics.bat` - creates a redacted text/JSON bundle under `runtime\diagnostics\` without screenshots.
 
 Build or rebuild the one-click files from this source folder:
 

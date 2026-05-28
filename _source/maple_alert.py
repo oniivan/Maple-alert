@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -34,6 +35,16 @@ ALERT_VOLUME_KEYS = {
     "captcha": "lie_detect_volume_percent",
     "minimap_red": "player_detected_volume_percent",
 }
+SENSITIVE_KEY_FRAGMENTS = (
+    "token",
+    "secret",
+    "password",
+    "webhook",
+    "chat_id",
+    "user_id",
+    "authorization",
+)
+REDACTED_VALUE = "<set, redacted>"
 
 try:
     import tomllib
@@ -2020,6 +2031,287 @@ def print_window_list() -> None:
         print(f"{safe_title} | left={rect.left} top={rect.top} width={rect.width} height={rect.height}")
 
 
+def is_sensitive_config_key(key: str) -> bool:
+    folded = key.casefold()
+    return any(fragment in folded for fragment in SENSITIVE_KEY_FRAGMENTS)
+
+
+def redact_config_value(key: str, value: Any) -> Any:
+    if is_sensitive_config_key(key):
+        if value is None or value == "":
+            return ""
+        return REDACTED_VALUE
+    if isinstance(value, dict):
+        return {str(child_key): redact_config_value(str(child_key), child_value) for child_key, child_value in value.items()}
+    if isinstance(value, list):
+        return [redact_config_value(key, item) for item in value]
+    return value
+
+
+def build_redacted_config(config: dict[str, Any]) -> dict[str, Any]:
+    redacted = {str(key): redact_config_value(str(key), value) for key, value in config.items()}
+    notification_settings = read_notification_settings(config)
+    if notification_settings:
+        redacted["runtime_notification_settings"] = redact_config_value("runtime_notification_settings", notification_settings)
+    return redacted
+
+
+def collect_sensitive_values(config: dict[str, Any]) -> set[str]:
+    values: set[str] = set()
+
+    def walk(key: str, value: Any) -> None:
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                walk(str(child_key), child_value)
+            return
+        if isinstance(value, list):
+            for item in value:
+                walk(key, item)
+            return
+        if is_sensitive_config_key(key) and isinstance(value, str) and value.strip():
+            values.add(value.strip())
+
+    walk("config", config)
+    walk("notification_settings", read_notification_settings(config))
+    return values
+
+
+def redact_sensitive_text(text: str, config: dict[str, Any]) -> str:
+    redacted = text
+    redacted = re.sub(
+        r"https://api\.telegram\.org/bot[^/\s]+/sendMessage",
+        "https://api.telegram.org/bot<redacted>/sendMessage",
+        redacted,
+    )
+    redacted = re.sub(
+        r"https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/\S+",
+        "<discord-webhook-redacted>",
+        redacted,
+    )
+    for value in sorted(collect_sensitive_values(config), key=len, reverse=True):
+        if len(value) >= 3:
+            redacted = redacted.replace(value, REDACTED_VALUE)
+    return redacted
+
+
+def matching_window_candidates(
+    config: dict[str, Any],
+    windows: list[tuple[str, Rect]] | None = None,
+) -> list[tuple[str, Rect]]:
+    capture_cfg = config["capture"]
+    needle = str(capture_cfg.get("window_title", "")).casefold().strip()
+    if not needle:
+        return []
+    ignored = ignored_window_title_substrings(capture_cfg)
+    available_windows = list_windows() if windows is None else windows
+    return [
+        (title, rect)
+        for title, rect in available_windows
+        if needle in title.casefold() and not is_ignored_window_title(title, ignored)
+    ]
+
+
+def notification_readiness_summary(config: dict[str, Any]) -> dict[str, Any]:
+    telegram_configured = bool(notification_value(config, "telegram", "bot_token")) and bool(
+        notification_value(config, "telegram", "chat_id")
+    )
+    discord_dm_configured = bool(notification_value(config, "discord", "bot_token")) and bool(
+        notification_value(config, "discord", "user_id")
+    )
+    discord_webhook_configured = bool(notification_value(config, "discord", "webhook_url"))
+    return {
+        "remote_enabled": remote_notifications_enabled(config),
+        "telegram_configured": telegram_configured,
+        "telegram_enabled": notification_service_enabled(config, "telegram"),
+        "discord_configured": discord_dm_configured or discord_webhook_configured,
+        "discord_dm_configured": discord_dm_configured,
+        "discord_webhook_configured": discord_webhook_configured,
+        "discord_enabled": notification_service_enabled(config, "discord"),
+    }
+
+
+def format_yes_no(value: bool) -> str:
+    return "yes" if value else "no"
+
+
+def format_system_volume_state(state: SystemVolumeState) -> str:
+    if state.percent is None and state.muted is None:
+        detail = f"unknown ({state.error})" if state.error else "unknown"
+        return f"System Volume: {detail}; warning threshold={SYSTEM_VOLUME_WARNING_PERCENT}%"
+    muted = "yes" if state.muted else "no"
+    percent = "unknown" if state.percent is None else f"{state.percent}%"
+    attention = "yes" if state.needs_attention else "no"
+    return f"System Volume: {percent}; muted={muted}; below threshold={attention}; warning threshold={SYSTEM_VOLUME_WARNING_PERCENT}%"
+
+
+def required_portable_files(config_dir: Path) -> list[tuple[str, Path]]:
+    return [
+        ("Launcher", config_dir / "START_MAPLE_ALERT.bat"),
+        ("App", config_dir / "MapleAlert.exe"),
+        ("Config", config_dir / "config.toml"),
+        ("Watchdog", config_dir / "_internal" / "watchdog_supervisor.ps1"),
+        ("Lie alert sound", config_dir / "alert_sounds" / "captcha_100pct.wav"),
+        ("Player alert sound", config_dir / "alert_sounds" / "minimap_red_100pct.wav"),
+    ]
+
+
+def build_setup_check_report(
+    config: dict[str, Any],
+    config_path: Path,
+    *,
+    windows: list[tuple[str, Rect]] | None = None,
+    system_volume_state: SystemVolumeState | None = None,
+) -> str:
+    config_dir = Path(config["_config_dir"])
+    capture_cfg = config["capture"]
+    lines = [
+        "Maple Alert setup check",
+        f"Config: {config_path.resolve()}",
+        f"Folder: {config_dir.resolve()}",
+    ]
+
+    for label, path in required_portable_files(config_dir):
+        status = "OK" if path.exists() else "MISSING"
+        lines.append(f"{label}: {status} ({path.name})")
+
+    if bool(capture_cfg.get("target_window", False)):
+        candidates = matching_window_candidates(config, windows)
+        if candidates:
+            title, rect = candidates[0]
+            scale_info = compute_scale_info(config, rect)
+            lines.append(
+                (
+                    f"Maple Window: FOUND \"{title}\" "
+                    f"left={rect.left} top={rect.top} resolution={rect.width}x{rect.height} "
+                    f"pixel_scale={scale_info.pixel_scale:.4f} "
+                    f"scale_x={scale_info.scale_x:.4f} scale_y={scale_info.scale_y:.4f}"
+                )
+            )
+            base = Rect(0, 0, rect.width, rect.height)
+            captcha_roi = roi_to_rect(base, config["roi"]["captcha"])
+            minimap_roi = roi_to_rect(base, config["roi"]["minimap"])
+            lines.append(f"Lie ROI: {captcha_roi.width}x{captcha_roi.height}+{captcha_roi.left}+{captcha_roi.top}")
+            lines.append(f"Minimap ROI: {minimap_roi.width}x{minimap_roi.height}+{minimap_roi.left}+{minimap_roi.top}")
+        else:
+            lines.append(
+                (
+                    "Maple Window: NOT FOUND; monitor fallback will be used until a non-alert "
+                    f"window containing \"{capture_cfg.get('window_title', '')}\" is visible."
+                )
+            )
+    else:
+        lines.append(f"Capture: monitor_index={capture_cfg.get('monitor_index', 1)} (target_window=false)")
+
+    volume_state = system_volume_state if system_volume_state is not None else read_system_volume_state()
+    lines.append(format_system_volume_state(volume_state))
+    lines.append(f"Lie Detect Volume: {read_alert_volume_percent(config, kind='captcha')}%")
+    lines.append(f"Player Detect Volume: {read_alert_volume_percent(config, kind='minimap_red')}%")
+
+    notifications = notification_readiness_summary(config)
+    lines.append(
+        (
+            "Remote Alerts: "
+            f"enabled={format_yes_no(bool(notifications['remote_enabled']))}; "
+            f"Telegram configured={format_yes_no(bool(notifications['telegram_configured']))} "
+            f"active={format_yes_no(bool(notifications['telegram_enabled']))}; "
+            f"Discord configured={format_yes_no(bool(notifications['discord_configured']))} "
+            f"active={format_yes_no(bool(notifications['discord_enabled']))}"
+        )
+    )
+    lines.append("Boundary: visual detection and alerts only; no gameplay automation.")
+    return "\n".join(lines)
+
+
+def tail_text_file(path: Path, max_lines: int = 200) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return ""
+    return "\n".join(lines[-max_lines:])
+
+
+def unique_diagnostic_bundle_dir(output_root: Path) -> Path:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base = output_root / f"maple_alert_diagnostics_{stamp}"
+    candidate = base
+    suffix = 1
+    while candidate.exists():
+        suffix += 1
+        candidate = output_root / f"{base.name}_{suffix}"
+    return candidate
+
+
+def write_diagnostic_bundle(
+    config: dict[str, Any],
+    config_path: Path,
+    *,
+    output_root: Path | None = None,
+    windows: list[tuple[str, Rect]] | None = None,
+    system_volume_state: SystemVolumeState | None = None,
+) -> Path:
+    root = output_root if output_root is not None else resolve_config_path(config, "runtime/diagnostics")
+    bundle_dir = unique_diagnostic_bundle_dir(root)
+    runtime_dir = bundle_dir / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=False)
+
+    (bundle_dir / "README.txt").write_text(
+        (
+            "Maple Alert diagnostics bundle\n"
+            "This bundle is text/JSON only. It does not include screenshots or debug crop images.\n"
+            "Remote alert tokens, IDs, and webhook URLs are redacted.\n"
+        ),
+        encoding="utf-8",
+    )
+    (bundle_dir / "summary.txt").write_text(
+        build_setup_check_report(
+            config,
+            config_path,
+            windows=windows,
+            system_volume_state=system_volume_state,
+        ),
+        encoding="utf-8",
+    )
+    (bundle_dir / "config_redacted.json").write_text(
+        json.dumps(build_redacted_config(config), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    watchdog_cfg = config.get("watchdog", {})
+    runtime_files = {
+        "heartbeat.json": watchdog_cfg.get("heartbeat_file", "runtime/heartbeat.json"),
+        "watchdog_heartbeat.json": watchdog_cfg.get("watchdog_heartbeat_file", "runtime/watchdog_heartbeat.json"),
+        "supervisor_heartbeat.json": watchdog_cfg.get("supervisor_heartbeat_file", "runtime/supervisor_heartbeat.json"),
+    }
+    for output_name, configured_path in runtime_files.items():
+        payload = read_json_file(resolve_config_path(config, str(configured_path)))
+        (runtime_dir / output_name).write_text(
+            json.dumps(redact_config_value(output_name, payload), indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    log_path = resolve_config_path(config, config["debug"]["log_file"])
+    log_tail = tail_text_file(log_path)
+    (bundle_dir / "detections_tail.txt").write_text(
+        redact_sensitive_text(log_tail or "(no detection log found)", config),
+        encoding="utf-8",
+    )
+    return bundle_dir
+
+
+def run_setup_check(config: dict[str, Any], config_path: Path) -> int:
+    print(build_setup_check_report(config, config_path), flush=True)
+    return 0
+
+
+def run_diagnostics(config: dict[str, Any], config_path: Path, output_dir: str) -> int:
+    output_root = Path(output_dir).expanduser()
+    if not output_root.is_absolute():
+        output_root = Path(config["_config_dir"]) / output_root
+    bundle_dir = write_diagnostic_bundle(config, config_path, output_root=output_root)
+    print(f"Diagnostics bundle written: {bundle_dir}", flush=True)
+    return 0
+
+
 def process_is_alive(pid: int | None) -> bool:
     if not pid or pid <= 0 or pid == os.getpid():
         return True
@@ -3752,6 +4044,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Write the generated alert WAV files to DIR, or alert_sounds if DIR is omitted.",
     )
     parser.add_argument(
+        "--setup-check",
+        action="store_true",
+        help="Print a redacted readiness report for folder files, target window, audio, volumes, and remote alerts.",
+    )
+    parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="Write a redacted text/JSON diagnostics bundle for support.",
+    )
+    parser.add_argument(
+        "--diagnostics-dir",
+        default="runtime/diagnostics",
+        help="Directory for --diagnostics output. Defaults to runtime/diagnostics beside config.toml.",
+    )
+    parser.add_argument(
         "--parent-pid",
         type=int,
         default=0,
@@ -3772,6 +4079,10 @@ def main(argv: list[str] | None = None) -> int:
         config_path = Path(sys.executable).resolve().with_name("config.toml")
     config = load_config(config_path)
     config["_parent_pid"] = int(getattr(args, "parent_pid", 0) or 0)
+    if args.setup_check:
+        return run_setup_check(config, config_path.resolve())
+    if args.diagnostics:
+        return run_diagnostics(config, config_path.resolve(), args.diagnostics_dir)
     if args.export_alert_wavs:
         return export_alert_wavs(config, args.export_alert_wavs)
     if args.overlay:

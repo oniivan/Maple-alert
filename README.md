@@ -16,6 +16,7 @@ Keep the black command window open while monitoring. Closing it stops the alert 
 - Always-on-top status overlay
 - Adjustable alert volumes
 - Watchdog crash/hang recovery
+- Setup check and redacted diagnostics bundle
 - Optional Discord DM/webhook and Telegram alerts
 
 This detects visual events and alerts the user. It does not automate gameplay or solve CAPTCHA.
@@ -28,6 +29,14 @@ This detects visual events and alerts the user. It does not automate gameplay or
 - `VERIFY.md` - source/package verification and release freshness checks
 - `_debug_tools\` - optional calibration/test launchers
 - `_source\` - source code, tests, and build script
+
+## Support Tools
+
+Open `_debug_tools\Setup Check.bat` to print folder, target-window, scaling,
+system-volume, alert-volume, and remote-alert readiness.
+
+Open `_debug_tools\Create Diagnostics.bat` to write a redacted text/JSON bundle
+under `runtime\diagnostics\`. It does not include screenshots or debug crops.
 
 ## Remote Alerts
 

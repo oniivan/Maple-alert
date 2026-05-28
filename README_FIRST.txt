@@ -36,5 +36,7 @@ starts the crash/hang watchdog layers.
 Optional:
 
   Edit config.toml to tune thresholds or add Discord/Telegram.
+  Open _debug_tools\Setup Check.bat if you are unsure the right window/audio/settings are ready.
+  Open _debug_tools\Create Diagnostics.bat to make a redacted support bundle.
   Open README.md for a short feature list.
   Open VERIFY.md for source/package smoke checks and release freshness notes.
