@@ -1,9 +1,9 @@
 {
     "app_name":  "Maple Alert",
     "app_version":  "0.4.0",
-    "built_at_utc":  "2026-05-28T15:37:34.5560549Z",
-    "source_commit":  "98cf4fd402f2fd26c06b1962851b95a6e7ea5e53",
-    "source_dirty":  true,
+    "built_at_utc":  "2026-05-28T15:45:32.0255060Z",
+    "source_commit":  "f239b56e1b1bb72db866fb54984432b2909ff76f",
+    "source_dirty":  false,
     "python":  "Python 3.14.5",
     "pyinstaller":  "6.20.0",
     "files":  [
@@ -15,7 +15,7 @@
                   {
                       "path":  "MapleAlert.exe",
                       "bytes":  7130107,
-                      "sha256":  "69064DE1D0C9080BFCCE2E4657E3D902EC42392BE625367582D1E8932C6C2598"
+                      "sha256":  "18567948850CF3339B6FB140F17874EFAB42017860ABC6ED6872665CB0F184BD"
                   },
                   {
                       "path":  "config.toml",
