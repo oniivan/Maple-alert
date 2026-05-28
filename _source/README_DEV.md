@@ -1,8 +1,8 @@
 # Maple Visual Alert Monitor
 
-This is a local Windows visual monitor. It reads screen pixels, checks two configurable regions of interest, and alerts when it sees either a centered CAPTCHA-like dialog or a red dot in the top-left minimap. It does not click, type, solve CAPTCHA, control the game, inject into a process, or hide itself.
+This is a local Windows visual monitor. It reads screen pixels, checks two configurable regions of interest, and alerts when it sees either a centered CAPTCHA-like dialog or a red dot in the top-left minimap.
 
-I will not help with anti-detection, evasion, or plausible-deniability techniques. This implementation uses ordinary Windows screen capture and optional window-title lookup only.
+This implementation uses ordinary Windows screen capture and optional window-title lookup.
 
 ## What It Needs
 
@@ -142,7 +142,7 @@ If the capture size changes while running, the monitor recalculates `pixel_scale
 
 The repo folder also includes:
 
-- `MapleAlert.exe` - the packaged Python app. Do not run this directly unless troubleshooting.
+- `MapleAlert.exe` - the packaged Python app. Use `START_MAPLE_ALERT.bat` for normal monitoring; direct exe runs are mainly for troubleshooting.
 - `config.toml` - editable settings.
 - `alert_sounds\` - exported WAV copies of the generated alert tones.
 - `README_FIRST.txt` - short instructions for the recipient.

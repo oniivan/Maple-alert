@@ -30,8 +30,9 @@ If the top bar flashes red with MONITOR CRASHED or MONITOR DOWN, the monitor
 has been crashing repeatedly or has been unavailable long enough to matter.
 If the volume section turns red, the app's alert intensity is below 25%.
 
-Do not run MapleAlert.exe directly unless you are troubleshooting. The BAT file
-starts the crash/hang watchdog layers.
+Use `START_MAPLE_ALERT.bat` for normal monitoring. Running `MapleAlert.exe`
+directly is mainly for troubleshooting because the BAT file starts the
+crash/hang watchdog layers.
 
 Optional:
 

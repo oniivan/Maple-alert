@@ -2125,7 +2125,7 @@ def build_setup_check_report(
             f"active={format_yes_no(bool(notifications['discord_enabled']))}"
         )
     )
-    lines.append("Boundary: visual detection and alerts only; no gameplay automation.")
+    lines.append("Mode: visual detection and local/remote alerts.")
     return "\n".join(lines)
 
 

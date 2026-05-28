@@ -2,11 +2,9 @@
 
 Use this when an AI coding agent or maintainer continues Maple Alert work.
 
-## Boundary
+## Scope
 
 Maple Alert is a local visual alert monitor. It may capture screen pixels, inspect configured ROIs, play sounds, show an overlay, write logs/diagnostics, and send user-configured remote alerts.
-
-Do not add gameplay automation, CAPTCHA solving, clicking, typing, memory reading, injection, hiding, evasion, or anti-detection behavior.
 
 ## Repo Surface
 
@@ -19,7 +17,7 @@ Do not add gameplay automation, CAPTCHA solving, clicking, typing, memory readin
 - `_source\tools\run_fast_tests.py` is the default test runner.
 - `config.local.toml`, `runtime\`, `logs\`, `debug_crops\`, and `docs\goals\` are local/ignored.
 
-## Safe Default Commands
+## Default Commands
 
 Run from the repo root:
 
@@ -59,12 +57,11 @@ After rebuild:
 ## Config And Secrets
 
 - Prefer `config.local.toml` or environment variables for private tokens/IDs.
-- Do not print raw Telegram tokens, Discord tokens, chat IDs, user IDs, webhook URLs, or full diagnostic payloads.
+- Use redacted summaries for Telegram tokens, Discord tokens, chat IDs, user IDs, webhook URLs, and diagnostic payloads.
 - Use `--validate-config`, `--setup-check`, and `--diagnostics` for redacted support evidence.
 
 ## Completion Checklist
 
-- Safety boundary is unchanged.
 - Root user flow still starts with `START_MAPLE_ALERT.bat`.
 - Fast tests pass without private screenshot fixtures.
 - Source and packaged smoke commands pass when relevant.

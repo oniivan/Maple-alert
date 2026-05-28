@@ -19,7 +19,7 @@ Keep the black command window open while monitoring. Closing it stops the alert 
 - Setup check and redacted diagnostics bundle
 - Optional Discord DM/webhook and Telegram alerts
 
-This detects visual events and alerts the user. It does not automate gameplay or solve CAPTCHA.
+This detects visual events and alerts the user.
 
 ## Files
 

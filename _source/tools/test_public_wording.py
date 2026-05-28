@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-FORBIDDEN = [
+REPLACED_BRAND_WORDS = [
     "maple" + "story",
     "maple" + "story " + "world" + "s",
     "world" + "s",
@@ -40,9 +40,9 @@ def test_public_wording_uses_maple_only() -> None:
         if path.suffix.casefold() not in TEXT_SUFFIXES:
             continue
         text = path.read_text(encoding="utf-8", errors="ignore").casefold()
-        for forbidden in FORBIDDEN:
-            if forbidden in text:
-                offenders.append(f"{path.relative_to(ROOT)} contains {forbidden!r}")
+        for word in REPLACED_BRAND_WORDS:
+            if word in text:
+                offenders.append(f"{path.relative_to(ROOT)} contains {word!r}")
     assert not offenders, "\n".join(offenders)
 
 
