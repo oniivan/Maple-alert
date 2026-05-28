@@ -131,13 +131,17 @@ detection_log_interval_seconds = 5
 status_interval_seconds = 15
 
 [telegram]
-# You can also set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables.
+# Keep private values out of the tracked config.toml when possible.
+# Preferred options:
+# - Put them in config.local.toml beside config.toml. That file is git-ignored.
+# - Or set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables.
 bot_token = ""
 chat_id = ""
 
 [discord]
 # Discord DM alerts need a bot token and numeric user ID. The bot must share a server with the user.
-# You can also set DISCORD_BOT_TOKEN, DISCORD_USER_ID, or DISCORD_WEBHOOK_URL environment variables.
+# Keep private values in config.local.toml or environment variables when possible:
+# DISCORD_BOT_TOKEN, DISCORD_USER_ID, or DISCORD_WEBHOOK_URL.
 enabled = false
 bot_token = ""
 user_id = ""

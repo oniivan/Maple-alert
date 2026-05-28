@@ -63,6 +63,12 @@ Print a player-facing setup readiness report:
 python .\maple_alert.py --config .\config.toml --setup-check
 ```
 
+Validate config values without printing credentials:
+
+```powershell
+python .\maple_alert.py --config .\config.toml --validate-config
+```
+
 Write a redacted support diagnostics bundle:
 
 ```powershell
@@ -72,6 +78,11 @@ python .\maple_alert.py --config .\config.toml --diagnostics
 Diagnostics are written under `runtime\diagnostics\` by default and include
 text/JSON summaries only. Remote alert tokens, IDs, and webhooks are redacted,
 and screenshots/debug crops are not included.
+
+For private machine-specific values, create `config.local.toml` beside
+`config.toml`. It is git-ignored, loaded after `config.toml`, and still loses
+to environment variables. Use it for tokens, chat IDs, webhooks, and personal
+volume/timing overrides.
 
 Capture one sample and save cropped ROIs to `debug_crops`:
 

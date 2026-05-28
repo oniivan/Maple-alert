@@ -585,12 +585,21 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
 
 
 def load_config(path: Path) -> dict[str, Any]:
+    loaded_files: list[str] = []
     if path.exists():
         with path.open("rb") as fh:
             file_config = tomllib.load(fh)
         config = deep_merge(DEFAULT_CONFIG, file_config)
+        loaded_files.append(str(path.resolve()))
     else:
         config = copy.deepcopy(DEFAULT_CONFIG)
+
+    local_path = path.with_name(f"{path.stem}.local{path.suffix}")
+    if local_path.exists() and local_path.resolve() != path.resolve():
+        with local_path.open("rb") as fh:
+            local_config = tomllib.load(fh)
+        config = deep_merge(config, local_config)
+        loaded_files.append(str(local_path.resolve()))
 
     # Environment variables make the checked-in config safe to share.
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -610,6 +619,7 @@ def load_config(path: Path) -> dict[str, Any]:
         config["discord"]["webhook_url"] = discord_webhook_url
 
     config["_config_dir"] = str(path.resolve().parent)
+    config["_loaded_config_files"] = loaded_files
     return config
 
 
@@ -2056,6 +2066,171 @@ def build_redacted_config(config: dict[str, Any]) -> dict[str, Any]:
     return redacted
 
 
+def config_issue(severity: str, code: str, path: str, message: str) -> dict[str, str]:
+    return {
+        "severity": severity,
+        "code": code,
+        "path": path,
+        "message": message,
+    }
+
+
+def validate_numeric_range(
+    issues: list[dict[str, str]],
+    value: Any,
+    *,
+    path: str,
+    code: str,
+    min_value: float,
+    max_value: float,
+) -> None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        issues.append(config_issue("error", code, path, f"{path} must be a number."))
+        return
+    if number < min_value or number > max_value:
+        issues.append(
+            config_issue(
+                "error",
+                code,
+                path,
+                f"{path} must be between {min_value:g} and {max_value:g}.",
+            )
+        )
+
+
+def validate_roi_config(issues: list[dict[str, str]], config: dict[str, Any], name: str) -> None:
+    roi_cfg = config.get("roi", {}).get(name, {})
+    values: dict[str, float] = {}
+    for key in ("x1", "y1", "x2", "y2"):
+        path = f"roi.{name}.{key}"
+        try:
+            values[key] = float(roi_cfg[key])
+        except (KeyError, TypeError, ValueError):
+            issues.append(config_issue("error", f"{name}_roi_invalid", path, f"{path} must be a number from 0 to 1."))
+            return
+        if values[key] < 0.0 or values[key] > 1.0:
+            issues.append(config_issue("error", f"{name}_roi_invalid", path, f"{path} must be between 0 and 1."))
+    if values["x2"] <= values["x1"] or values["y2"] <= values["y1"]:
+        issues.append(
+            config_issue(
+                "error",
+                f"{name}_roi_order",
+                f"roi.{name}",
+                f"roi.{name} must have x2>x1 and y2>y1.",
+            )
+        )
+
+
+def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    capture_cfg = config.get("capture", {})
+    alerts_cfg = config.get("alerts", {})
+
+    if bool(capture_cfg.get("target_window", False)) and not str(capture_cfg.get("window_title", "")).strip():
+        issues.append(
+            config_issue(
+                "error",
+                "window_title_empty",
+                "capture.window_title",
+                "capture.window_title is required when target_window is true.",
+            )
+        )
+
+    try:
+        fps = float(capture_cfg.get("fps", DEFAULT_CONFIG["capture"]["fps"]))
+        if fps <= 0:
+            issues.append(config_issue("error", "capture_fps_invalid", "capture.fps", "capture.fps must be above 0."))
+        elif fps < 0.05:
+            issues.append(
+                config_issue(
+                    "warning",
+                    "capture_fps_clamped_low",
+                    "capture.fps",
+                    "capture.fps is below 0.05 and will be clamped.",
+                )
+            )
+        elif fps > 2.0:
+            issues.append(
+                config_issue(
+                    "warning",
+                    "capture_fps_high",
+                    "capture.fps",
+                    "capture.fps is high for a low-CPU monitor.",
+                )
+            )
+    except (TypeError, ValueError):
+        issues.append(config_issue("error", "capture_fps_invalid", "capture.fps", "capture.fps must be numeric."))
+
+    validate_roi_config(issues, config, "captcha")
+    validate_roi_config(issues, config, "minimap")
+
+    for key in ("alert_volume_percent", "lie_detect_volume_percent", "player_detected_volume_percent"):
+        if key in alerts_cfg:
+            validate_numeric_range(
+                issues,
+                alerts_cfg.get(key),
+                path=f"alerts.{key}",
+                code=f"{key}_range",
+                min_value=0,
+                max_value=250,
+            )
+
+    notifications = notification_readiness_summary(config)
+    telegram_token = bool(notification_value(config, "telegram", "bot_token"))
+    telegram_chat = bool(notification_value(config, "telegram", "chat_id"))
+    discord_token = bool(notification_value(config, "discord", "bot_token"))
+    discord_user = bool(notification_value(config, "discord", "user_id"))
+    discord_webhook = bool(notification_value(config, "discord", "webhook_url"))
+
+    if telegram_token != telegram_chat:
+        issues.append(
+            config_issue(
+                "warning",
+                "telegram_incomplete",
+                "telegram",
+                "Telegram needs both bot_token and chat_id to send alerts.",
+            )
+        )
+    if (discord_token != discord_user) and not discord_webhook:
+        issues.append(
+            config_issue(
+                "warning",
+                "discord_dm_incomplete",
+                "discord",
+                "Discord DM needs both bot_token and user_id, or a webhook_url.",
+            )
+        )
+    if bool(notifications["remote_enabled"]) and not (
+        bool(notifications["telegram_configured"]) or bool(notifications["discord_configured"])
+    ):
+        issues.append(
+            config_issue(
+                "warning",
+                "remote_alerts_no_service",
+                "notifications.remote_enabled",
+                "Remote alerts are enabled but no complete Telegram or Discord destination is configured.",
+            )
+        )
+    if not bool(alerts_cfg.get("safe_mode", True)) and not bool(notifications["remote_enabled"]):
+        issues.append(
+            config_issue(
+                "warning",
+                "legacy_remote_mode",
+                "alerts.safe_mode",
+                "safe_mode is false; prefer notifications.remote_enabled plus runtime DM settings for private credentials.",
+            )
+        )
+
+    return issues
+
+
+def count_label(count: int, word: str) -> str:
+    suffix = "" if count == 1 else "s"
+    return f"{count} {word}{suffix}"
+
+
 def collect_sensitive_values(config: dict[str, Any]) -> set[str]:
     values: set[str] = set()
 
@@ -2173,6 +2348,22 @@ def build_setup_check_report(
     for label, path in required_portable_files(config_dir):
         status = "OK" if path.exists() else "MISSING"
         lines.append(f"{label}: {status} ({path.name})")
+
+    loaded_files = config.get("_loaded_config_files", [])
+    if loaded_files:
+        lines.append(f"Loaded Config Files: {len(loaded_files)}")
+
+    issues = validate_config(config)
+    errors = sum(1 for issue in issues if issue.get("severity") == "error")
+    warnings = sum(1 for issue in issues if issue.get("severity") == "warning")
+    lines.append(f"Config Validation: {count_label(errors, 'error')}, {count_label(warnings, 'warning')}")
+    for issue in issues[:5]:
+        lines.append(
+            (
+                f"  - {issue.get('severity', 'warning').upper()} "
+                f"{issue.get('path', 'config')}: {issue.get('message', '')}"
+            )
+        )
 
     if bool(capture_cfg.get("target_window", False)):
         candidates = matching_window_candidates(config, windows)
@@ -2310,6 +2501,22 @@ def run_diagnostics(config: dict[str, Any], config_path: Path, output_dir: str) 
     bundle_dir = write_diagnostic_bundle(config, config_path, output_root=output_root)
     print(f"Diagnostics bundle written: {bundle_dir}", flush=True)
     return 0
+
+
+def run_validate_config(config: dict[str, Any]) -> int:
+    issues = validate_config(config)
+    errors = sum(1 for issue in issues if issue.get("severity") == "error")
+    warnings = sum(1 for issue in issues if issue.get("severity") == "warning")
+    print(f"Config Validation: {count_label(errors, 'error')}, {count_label(warnings, 'warning')}", flush=True)
+    for issue in issues:
+        print(
+            (
+                f"{issue.get('severity', 'warning').upper()} "
+                f"{issue.get('path', 'config')}: {issue.get('message', '')}"
+            ),
+            flush=True,
+        )
+    return 1 if errors else 0
 
 
 def process_is_alive(pid: int | None) -> bool:
@@ -4059,6 +4266,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Directory for --diagnostics output. Defaults to runtime/diagnostics beside config.toml.",
     )
     parser.add_argument(
+        "--validate-config",
+        action="store_true",
+        help="Check config values and print redacted errors/warnings.",
+    )
+    parser.add_argument(
         "--parent-pid",
         type=int,
         default=0,
@@ -4083,6 +4295,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_setup_check(config, config_path.resolve())
     if args.diagnostics:
         return run_diagnostics(config, config_path.resolve(), args.diagnostics_dir)
+    if args.validate_config:
+        return run_validate_config(config)
     if args.export_alert_wavs:
         return export_alert_wavs(config, args.export_alert_wavs)
     if args.overlay:

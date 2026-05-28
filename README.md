@@ -38,6 +38,11 @@ system-volume, alert-volume, and remote-alert readiness.
 Open `_debug_tools\Create Diagnostics.bat` to write a redacted text/JSON bundle
 under `runtime\diagnostics\`. It does not include screenshots or debug crops.
 
+Private settings can go in `config.local.toml` beside `config.toml`; it is
+git-ignored and loaded after `config.toml`. Environment variables still win.
+Run `MapleAlert.exe --config .\config.toml --validate-config` for a redacted
+config check.
+
 ## Remote Alerts
 
 Click `DM` on the overlay to paste Telegram or Discord details and send a test.

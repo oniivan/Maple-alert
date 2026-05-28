@@ -5,6 +5,9 @@ __pycache__/
 debug_crops/
 logs/
 runtime/
+config.local.toml
+*.local.toml
+diagnostics/
 build/
 dist/
 docs/goals/
