@@ -16,6 +16,10 @@ I will not help with anti-detection, evasion, or plausible-deniability technique
 
 ## Architecture
 
+- Source layout:
+  - `maple_alert.py` is still the CLI, overlay, watchdog, alert, and packaging entrypoint.
+  - `vision_core.py` holds shared rectangle, scale, and crop helpers used by live capture and detector tests.
+  - `detectors/minimap_red.py` holds the minimap content isolation and red-dot shape detector.
 - `mss` captures only small ROIs. The default visual scan cadence is `0.25 FPS`, meaning one scan every 4 seconds, to keep CPU low.
 - `pygetwindow` tries to locate a visible window whose title contains `Maple`.
 - If the window is not found, capture falls back to the configured monitor.
