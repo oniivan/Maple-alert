@@ -27,6 +27,8 @@ This detects visual events and alerts the user. It does not automate gameplay or
 - `config.toml` - settings
 - `README_FIRST.txt` - short user notes
 - `VERIFY.md` - source/package verification and release freshness checks
+- `docs\COMMON_PROBLEMS.md` - troubleshooting
+- `docs\AGENT_HANDOFF.md` - maintainer and AI-agent handoff notes
 - `release_manifest.json` and `SHA256SUMS.txt` - package provenance
 - `_debug_tools\` - optional calibration/test launchers
 - `_source\` - source code, tests, and build script

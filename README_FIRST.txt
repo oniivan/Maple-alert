@@ -40,5 +40,6 @@ Optional:
   Open _debug_tools\Setup Check.bat if you are unsure the right window/audio/settings are ready.
   Open _debug_tools\Create Diagnostics.bat to make a redacted support bundle.
   Open README.md for a short feature list.
+  Open docs\COMMON_PROBLEMS.md for troubleshooting.
   Open VERIFY.md for source/package smoke checks and release freshness notes.
   Open release_manifest.json or SHA256SUMS.txt to verify package hashes.

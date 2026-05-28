@@ -7,7 +7,9 @@ Run these commands from the repo root on Windows.
 The default local check does not require private screenshot fixtures:
 
 ```powershell
-$files = @("_source\maple_alert.py") + (Get-ChildItem _source\tools\test_*.py | ForEach-Object { $_.FullName })
+$files = @("_source\maple_alert.py", "_source\vision_core.py") +
+  (Get-ChildItem _source\detectors -Filter *.py | ForEach-Object { $_.FullName }) +
+  (Get-ChildItem _source\tools -Filter test_*.py | ForEach-Object { $_.FullName })
 .\.venv\Scripts\python.exe -m py_compile @files
 .\.venv\Scripts\python.exe _source\tools\run_fast_tests.py
 .\.venv\Scripts\python.exe _source\maple_alert.py --help
@@ -84,6 +86,11 @@ audited.
 
 Do not inspect or print tokens from `config.toml` while collecting release
 evidence. Use redacted summaries for any support or handoff notes.
+
+## Agent Handoff
+
+Use `docs\AGENT_HANDOFF.md` for safe continuation context, module ownership,
+config/secrets rules, and package rebuild policy.
 
 ## Safety Boundary
 

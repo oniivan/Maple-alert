@@ -35,15 +35,17 @@ def test_release_manifest_and_checksums_match_release_surface() -> None:
         "alert_sounds/watchdog_100pct.wav",
     ]
 
-    for rel_path in required:
-        assert rel_path in files, rel_path
+    for rel_path, entry in files.items():
         absolute = ROOT / rel_path
         assert absolute.is_file(), rel_path
-        assert files[rel_path]["bytes"] == absolute.stat().st_size
-        assert files[rel_path]["sha256"] == sha256_file(absolute)
+        assert entry["bytes"] == absolute.stat().st_size
+        assert entry["sha256"] == sha256_file(absolute)
+
+    for rel_path in required:
+        assert rel_path in files, rel_path
 
     sums_text = sums_path.read_text(encoding="utf-8")
-    for rel_path in required:
+    for rel_path in files:
         assert files[rel_path]["sha256"] in sums_text
         assert rel_path.replace("\\", "/") in sums_text
 
