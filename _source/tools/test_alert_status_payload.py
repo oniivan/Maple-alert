@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -9,8 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from maple_alert import AlertManager, DetectionResult, format_last_seen_minutes, overlay_live_status_text
 
 
-def make_config(required_seconds: float = 20.0) -> dict:
+def make_config(config_dir: str, required_seconds: float = 20.0) -> dict:
     return {
+        "_config_dir": config_dir,
         "alerts": {
             "audible": False,
             "safe_mode": True,
@@ -26,27 +28,32 @@ def make_config(required_seconds: float = 20.0) -> dict:
 
 
 def test_lie_last_seen_persists_after_clear() -> None:
-    manager = AlertManager(make_config(), logging.getLogger("test_lie_status"))
+    with tempfile.TemporaryDirectory() as temp_dir:
+        manager = AlertManager(make_config(temp_dir), logging.getLogger("test_lie_status"))
 
-    manager.handle_result("captcha", DetectionResult(True, 0.95, {}))
-    active = manager.status_snapshot()
-    assert active["lie_last_seen_epoch"] is not None
-    assert active["active_alert"] == "lie_detector"
+        manager.handle_result("captcha", DetectionResult(True, 0.95, {}))
+        active = manager.status_snapshot()
+        assert active["lie_last_seen_epoch"] is not None
+        assert active["active_alert"] == "lie_detector"
 
-    manager.handle_result("captcha", DetectionResult(False, 0.0, {}))
-    cleared = manager.status_snapshot()
-    assert cleared["lie_last_seen_epoch"] == active["lie_last_seen_epoch"]
-    assert cleared["active_alert"] is None
+        manager.handle_result("captcha", DetectionResult(False, 0.0, {}))
+        cleared = manager.status_snapshot()
+        assert cleared["lie_last_seen_epoch"] == active["lie_last_seen_epoch"]
+        assert cleared["active_alert"] is None
 
 
 def test_player_last_seen_updates_before_alert_threshold() -> None:
-    manager = AlertManager(make_config(required_seconds=999), logging.getLogger("test_player_status"))
+    with tempfile.TemporaryDirectory() as temp_dir:
+        manager = AlertManager(
+            make_config(temp_dir, required_seconds=999),
+            logging.getLogger("test_player_status"),
+        )
 
-    manager.handle_result("minimap_red", DetectionResult(True, 1.0, {"red_pixels": 60}))
-    snapshot = manager.status_snapshot()
+        manager.handle_result("minimap_red", DetectionResult(True, 1.0, {"red_pixels": 60}))
+        snapshot = manager.status_snapshot()
 
-    assert snapshot["player_last_seen_epoch"] is not None
-    assert snapshot["active_alert"] is None
+        assert snapshot["player_last_seen_epoch"] is not None
+        assert snapshot["active_alert"] is None
 
 
 def test_last_seen_minutes_format() -> None:

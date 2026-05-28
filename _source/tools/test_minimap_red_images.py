@@ -12,6 +12,12 @@ sys.path.insert(0, str(ROOT))
 from maple_alert import Rect, crop_bgr, detect_minimap_red, load_config, roi_to_rect, set_runtime_scale  # noqa: E402
 
 
+USAGE = (
+    "Usage: python _source/tools/test_minimap_red_images.py "
+    "C:/path/to/screenshot-fixtures"
+)
+
+
 def expected_count(path: Path) -> int:
     match = re.match(r"(\d+)", path.name)
     if not match:
@@ -20,7 +26,17 @@ def expected_count(path: Path) -> int:
 
 
 def main() -> int:
-    image_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("D:/screens")
+    if len(sys.argv) != 2:
+        print(USAGE)
+        print("This detector regression check is optional and requires private screenshot fixtures.")
+        return 2
+
+    image_dir = Path(sys.argv[1])
+    if not image_dir.is_dir():
+        print(f"Fixture directory not found: {image_dir}")
+        print(USAGE)
+        return 2
+
     paths = sorted(image_dir.glob("*red dot*.png"))
     if not paths:
         print(f"No red-dot test screenshots found in {image_dir}")

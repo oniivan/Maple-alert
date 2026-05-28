@@ -131,6 +131,30 @@ To move it to another Windows PC, copy or download the repo folder, then double-
 
 The exe is unsigned, so Windows may show a SmartScreen warning the first time it runs.
 
+## Verification
+
+From the repo root, run the default local verification baseline:
+
+```powershell
+$files = @("_source\maple_alert.py") + (Get-ChildItem _source\tools\test_*.py | ForEach-Object { $_.FullName })
+.\.venv\Scripts\python.exe -m py_compile @files
+.\.venv\Scripts\python.exe _source\tools\run_fast_tests.py
+.\.venv\Scripts\python.exe _source\maple_alert.py --help
+.\MapleAlert.exe --help
+```
+
+The fast runner executes all script-style tests except private screenshot
+fixture checks. The detector fixture checks are explicit optional commands:
+
+```powershell
+.\.venv\Scripts\python.exe _source\tools\test_captcha_patch_images.py C:\path\to\screenshot-fixtures
+.\.venv\Scripts\python.exe _source\tools\test_minimap_red_images.py C:\path\to\screenshot-fixtures
+```
+
+Run the optional fixture checks before detector, ROI, scaling, or threshold
+changes when the private screenshot fixtures are available. See `VERIFY.md` for
+the release artifact freshness policy and agent handoff baseline.
+
 ## Watchdog Limits
 
 The watchdog is practical protection, not a guarantee. It can catch normal Python crashes, module errors, most hangs that stop the capture loop, and stale heartbeat writes. A single monitor crash is logged and restarted quietly. The watchdog alarm starts only if the monitor is unavailable for 120 seconds or if 3 monitor failures happen inside 5 minutes; it repeats no faster than every 120 seconds while the monitor remains unhealthy. The overlay flashes red with `MONITOR CRASHED X TIMES IN 5 MINS` or `MONITOR DOWN Xm+`, then keeps that warning latched until the monitor has recovered cleanly for 600 seconds. The batch launcher also starts an outer PowerShell supervisor, which restarts the watchdog if the watchdog exits or stops updating its own heartbeat for about 30 seconds while the launcher window is still open.

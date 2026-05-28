@@ -25,6 +25,7 @@ This detects visual events and alerts the user. It does not automate gameplay or
 - `START_MAPLE_ALERT.bat` - run this
 - `config.toml` - settings
 - `README_FIRST.txt` - short user notes
+- `VERIFY.md` - source/package verification and release freshness checks
 - `_debug_tools\` - optional calibration/test launchers
 - `_source\` - source code, tests, and build script
 

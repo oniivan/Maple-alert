@@ -1,0 +1,88 @@
+# Verify Maple Alert
+
+Run these commands from the repo root on Windows.
+
+## Default Fast Verification
+
+The default local check does not require private screenshot fixtures:
+
+```powershell
+$files = @("_source\maple_alert.py") + (Get-ChildItem _source\tools\test_*.py | ForEach-Object { $_.FullName })
+.\.venv\Scripts\python.exe -m py_compile @files
+.\.venv\Scripts\python.exe _source\tools\run_fast_tests.py
+.\.venv\Scripts\python.exe _source\maple_alert.py --help
+.\MapleAlert.exe --help
+```
+
+`run_fast_tests.py` runs every `_source\tools\test_*.py` script except the
+two screenshot-fixture detector checks. The runner is intentionally based on
+plain Python script execution so the portable repo can be verified without
+installing pytest.
+
+If pytest is installed, `pytest.ini` follows the same default convention by
+ignoring the two optional fixture checks.
+
+## Optional Detector Fixture Checks
+
+The detector image checks are explicit opt-in checks because the screenshot
+fixtures are private and are not part of the repo:
+
+```powershell
+.\.venv\Scripts\python.exe _source\tools\test_captcha_patch_images.py C:\path\to\screenshot-fixtures
+.\.venv\Scripts\python.exe _source\tools\test_minimap_red_images.py C:\path\to\screenshot-fixtures
+```
+
+Run them before changing detector thresholds, ROI math, color filtering, or
+scaling behavior. A missing fixture directory should be recorded as "not run"
+rather than hidden inside the default fast suite.
+
+## Source And Package Smoke
+
+Source smoke:
+
+```powershell
+.\.venv\Scripts\python.exe _source\maple_alert.py --help
+```
+
+Packaged smoke:
+
+```powershell
+.\MapleAlert.exe --help
+```
+
+For user-facing source changes, run source smoke. For any change that affects
+packaged behavior, startup arguments, `_source\maple_alert.py`, the watchdog,
+alert sounds, runtime dependencies, or packaging inputs, rebuild with:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\_source\build_one_click.ps1
+```
+
+Then rerun the default fast verification and the packaged smoke.
+
+## Artifact Freshness Policy
+
+Treat the repo-root one-click files as the portable release surface:
+
+```text
+START_MAPLE_ALERT.bat
+MapleAlert.exe
+_internal\
+alert_sounds\
+config.toml
+README.md
+README_FIRST.txt
+```
+
+After a rebuild, verify `MapleAlert.exe`, `_internal\`, and `alert_sounds\`
+were refreshed together. Do not treat an old `dist\` folder as current release
+evidence unless it was produced by the same rebuild being audited.
+
+Do not inspect or print tokens from `config.toml` while collecting release
+evidence. Use redacted summaries for any support or handoff notes.
+
+## Safety Boundary
+
+Verification must preserve the project boundary: Maple Alert is a visual
+monitor that alerts the user. It must not click, type, solve CAPTCHA, automate
+gameplay, inject into processes, hide itself, or add evasion behavior.

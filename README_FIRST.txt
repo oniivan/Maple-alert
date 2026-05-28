@@ -37,3 +37,4 @@ Optional:
 
   Edit config.toml to tune thresholds or add Discord/Telegram.
   Open README.md for a short feature list.
+  Open VERIFY.md for source/package smoke checks and release freshness notes.
