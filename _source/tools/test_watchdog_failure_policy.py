@@ -52,6 +52,18 @@ def test_crash_loop_sounds_once_then_realerts_after_interval() -> None:
     assert tracker.should_sound(snapshot, now=251.0) is True
 
 
+def test_watchdog_subject_uses_watchdog_title() -> None:
+    tracker = WatchdogFailureTracker(make_config(), subject="WATCHDOG")
+
+    for timestamp in (10.0, 70.0, 130.0):
+        tracker.record_abnormal("watchdog_exited", now=timestamp, exit_code=1)
+    snapshot = tracker.update(monitor_available=False, now=130.0)
+
+    assert snapshot["subject"] == "WATCHDOG"
+    assert snapshot["title"] == "WATCHDOG CRASHED 3 TIMES IN 5 MINS"
+    assert overlay_watchdog_health_text(snapshot, "|") == "WATCHDOG CRASHED 3 TIMES IN 5 MINS |"
+
+
 def test_sustained_monitor_downtime_triggers_even_without_many_crashes() -> None:
     tracker = WatchdogFailureTracker(make_config())
 
@@ -91,6 +103,7 @@ def test_degraded_state_stays_latched_until_clean_recovery() -> None:
 if __name__ == "__main__":
     test_single_monitor_exit_restarts_quietly()
     test_crash_loop_sounds_once_then_realerts_after_interval()
+    test_watchdog_subject_uses_watchdog_title()
     test_sustained_monitor_downtime_triggers_even_without_many_crashes()
     test_degraded_state_stays_latched_until_clean_recovery()
     print("watchdog failure policy tests passed")

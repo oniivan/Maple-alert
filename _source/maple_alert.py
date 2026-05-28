@@ -155,6 +155,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "watchdog": {
         "heartbeat_file": "runtime/heartbeat.json",
         "watchdog_heartbeat_file": "runtime/watchdog_heartbeat.json",
+        "supervisor_heartbeat_file": "runtime/supervisor_heartbeat.json",
         "quit_file": "runtime/quit_requested.json",
         "heartbeat_interval_seconds": 2,
         "stale_seconds": 12,
@@ -244,16 +245,17 @@ def minutes_label(seconds: float | int) -> str:
 
 
 def watchdog_health_title(snapshot: dict[str, Any]) -> str:
+    subject = str(snapshot.get("subject", "MONITOR")).strip().upper() or "MONITOR"
     title = str(snapshot.get("title", "")).strip()
     if title:
         return title
     reason = snapshot.get("reason")
     if reason == "monitor_down":
-        return "MONITOR DOWN"
+        return f"{subject} DOWN"
     if reason == "crash_loop":
         count = int(snapshot.get("crash_count_window", 0) or 0)
         window = minutes_label(float(snapshot.get("window_seconds", 300) or 300))
-        return f"MONITOR CRASHED {count} TIMES IN {window}"
+        return f"{subject} CRASHED {count} TIMES IN {window}"
     return ""
 
 
@@ -399,8 +401,9 @@ class SystemVolumeState:
 
 
 class WatchdogFailureTracker:
-    def __init__(self, config: dict[str, Any]) -> None:
+    def __init__(self, config: dict[str, Any], subject: str = "MONITOR") -> None:
         watchdog_cfg = config.get("watchdog", {})
+        self.subject = subject.strip().upper() or "MONITOR"
         self.window_seconds = max(30.0, float(watchdog_cfg.get("crash_window_seconds", 300)))
         self.crash_alert_count = max(1, int(watchdog_cfg.get("crash_alert_count", 3)))
         self.monitor_down_alert_seconds = max(
@@ -459,12 +462,12 @@ class WatchdogFailureTracker:
         if crash_count >= self.crash_alert_count:
             raw_reason = "crash_loop"
             raw_title = (
-                f"MONITOR CRASHED {crash_count} TIMES IN "
+                f"{self.subject} CRASHED {crash_count} TIMES IN "
                 f"{minutes_label(self.window_seconds)}"
             )
         elif down_seconds >= self.monitor_down_alert_seconds:
             raw_reason = "monitor_down"
-            raw_title = f"MONITOR DOWN {max(1, int(down_seconds // 60))}m+"
+            raw_title = f"{self.subject} DOWN {max(1, int(down_seconds // 60))}m+"
 
         raw_active = bool(raw_reason)
         latched = False
@@ -492,6 +495,7 @@ class WatchdogFailureTracker:
         title = raw_title or (self.latched_title if latched else "")
         return {
             "active": active,
+            "subject": self.subject,
             "soundable": raw_active,
             "latched": latched,
             "reason": reason,
@@ -2464,6 +2468,10 @@ def run_overlay(config: dict[str, Any]) -> int:
         config,
         config["watchdog"].get("watchdog_heartbeat_file", "runtime/watchdog_heartbeat.json"),
     )
+    supervisor_heartbeat = resolve_config_path(
+        config,
+        config["watchdog"].get("supervisor_heartbeat_file", "runtime/supervisor_heartbeat.json"),
+    )
     quit_path = quit_signal_path(config)
     warning_seconds = max(1.0, float(overlay_cfg.get("warning_seconds", 6)))
     stale_seconds = max(warning_seconds + 1.0, float(overlay_cfg.get("stale_seconds", 14)))
@@ -2907,10 +2915,14 @@ def run_overlay(config: dict[str, Any]) -> int:
         status = payload.get("alert_status")
         return status if isinstance(status, dict) else {}
 
-    def watchdog_health_from_heartbeat(payload: dict[str, Any], age: float | None) -> dict[str, Any]:
+    def health_from_heartbeat(
+        payload: dict[str, Any],
+        age: float | None,
+        key: str,
+    ) -> dict[str, Any]:
         if age is None or age > stale_seconds:
             return {}
-        health = payload.get("monitor_health")
+        health = payload.get(key)
         return health if isinstance(health, dict) else {}
 
     def active_alert_label(active_alert: str | None) -> str:
@@ -2967,15 +2979,19 @@ def run_overlay(config: dict[str, Any]) -> int:
         refresh_system_volume_if_needed()
         monitor_age = heartbeat_age(monitor_heartbeat)
         watchdog_age = heartbeat_age(watchdog_heartbeat)
+        supervisor_age = heartbeat_age(supervisor_heartbeat)
         monitor_payload = read_monitor_heartbeat()
         watchdog_payload = read_json_file(watchdog_heartbeat)
+        supervisor_payload = read_json_file(supervisor_heartbeat)
         refresh_capture_notice(monitor_payload)
         maple_missing = maple_missing_from_heartbeat(monitor_payload, monitor_age)
         alert_status = alert_status_from_heartbeat(monitor_payload, monitor_age)
-        watchdog_health = watchdog_health_from_heartbeat(watchdog_payload, watchdog_age)
+        monitor_health = health_from_heartbeat(watchdog_payload, watchdog_age, "monitor_health")
+        supervisor_health = health_from_heartbeat(supervisor_payload, supervisor_age, "watchdog_health")
+        watchdog_health = supervisor_health if supervisor_health.get("active") else monitor_health
         watchdog_health_active = bool(watchdog_health.get("active", False))
         active_alert = alert_status.get("active_alert")
-        ages = [age for age in (monitor_age, watchdog_age) if age is not None]
+        ages = [age for age in (monitor_age, watchdog_age, supervisor_age) if age is not None]
         worst_age = max(ages, default=None)
         system_volume = state["system_volume"]
         system_volume_ignored = bool(state.get("ignore_system_volume_warning", False))

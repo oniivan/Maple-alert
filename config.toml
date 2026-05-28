@@ -138,6 +138,7 @@ chat_id = ""
 [watchdog]
 heartbeat_file = "runtime/heartbeat.json"
 watchdog_heartbeat_file = "runtime/watchdog_heartbeat.json"
+supervisor_heartbeat_file = "runtime/supervisor_heartbeat.json"
 quit_file = "runtime/quit_requested.json"
 heartbeat_interval_seconds = 2
 stale_seconds = 12
