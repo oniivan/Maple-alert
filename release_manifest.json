@@ -1,8 +1,8 @@
 {
     "app_name":  "Maple Alert",
     "app_version":  "0.4.0",
-    "built_at_utc":  "2026-05-28T16:49:07.8364867Z",
-    "source_commit":  "deb2fac4b2a82373c3b16ce9af73e7c7d3211235",
+    "built_at_utc":  "2026-05-28T18:01:02.0377162Z",
+    "source_commit":  "2e0c78241cf11bd53909eea3ddbe0ba657f1409f",
     "source_dirty":  false,
     "python":  "Python 3.14.5",
     "pyinstaller":  "6.20.0",
@@ -14,8 +14,8 @@
                   },
                   {
                       "path":  "MapleAlert.exe",
-                      "bytes":  7132913,
-                      "sha256":  "DF5258C0C257FA718571A3BAEB5FCA40C3BB51221DE0835C2CFEBC5207B30FA4"
+                      "bytes":  7132900,
+                      "sha256":  "C840262B96C6DA166F6D65ED39A430F1145D792263F49D5E6B1A150B9134169C"
                   },
                   {
                       "path":  "config.toml",
@@ -24,13 +24,13 @@
                   },
                   {
                       "path":  "README.md",
-                      "bytes":  1865,
-                      "sha256":  "75806E97F5EF4007561FF5131D85555B644BA357513853C23EA8FF219268B312"
+                      "bytes":  1817,
+                      "sha256":  "97CF55612D6A548D9C594CF2D64002697ABE4FD2877ADE5664E21D704E1F760F"
                   },
                   {
                       "path":  "README_FIRST.txt",
-                      "bytes":  2303,
-                      "sha256":  "E80765DEDAD5DCCE7253340B6D58A57949B12F5E914F348D44ACC154B8A6A1EE"
+                      "bytes":  2359,
+                      "sha256":  "018E7EAE4BA819046E8E81B8CFCFBE9EE5BD9BD2B0B73874B30348D76D4E0E18"
                   },
                   {
                       "path":  "_internal/watchdog_supervisor.ps1",
