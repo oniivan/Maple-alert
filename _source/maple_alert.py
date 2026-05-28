@@ -329,6 +329,21 @@ def blend_hex_color(foreground: str, background: str, background_amount: float) 
     return "#" + "".join(f"{channel:02x}" for channel in channels)
 
 
+def notification_entry_style() -> dict[str, Any]:
+    return {
+        "bg": "#243244",
+        "fg": "#f3fff6",
+        "insertbackground": "#f3fff6",
+        "selectbackground": "#3b704d",
+        "selectforeground": "#ffffff",
+        "highlightbackground": "#4b667d",
+        "highlightcolor": "#6fdc91",
+        "highlightthickness": 1,
+        "relief": "solid",
+        "bd": 1,
+    }
+
+
 def overlay_control_layout() -> dict[str, Any]:
     return {
         "width": OVERLAY_WIDTH,
@@ -3180,12 +3195,9 @@ def run_overlay(config: dict[str, Any]) -> int:
             entry = tk.Entry(
                 dialog,
                 width=38,
-                bg="#10151b",
-                fg="#f3fff6",
-                insertbackground="#f3fff6",
-                relief="flat",
                 show=show,
                 font=("Consolas", 9),
+                **notification_entry_style(),
             )
             entry.insert(0, notification_entry_value(settings, service, key))
             entry.grid(row=row, column=1, padx=10, pady=(8, 2))

@@ -10,6 +10,7 @@ from maple_alert import (
     OVERLAY_FULL_HEIGHT,
     OVERLAY_PLAYER_VOLUME_LABEL,
     blend_hex_color,
+    notification_entry_style,
     overlay_control_layout,
     overlay_drawer_target_height,
 )
@@ -41,8 +42,18 @@ def test_volume_fill_color_can_be_softened() -> None:
     assert blend_hex_color("#24d15d", "#10151b", 0.25) == "#1fa24c"
 
 
+def test_notification_entry_style_has_distinct_fill_and_border() -> None:
+    style = notification_entry_style()
+
+    assert style["bg"] not in {"#111418", "#10151b"}
+    assert style["fg"] == "#f3fff6"
+    assert int(style["highlightthickness"]) >= 1
+    assert style["highlightbackground"] != style["bg"]
+
+
 if __name__ == "__main__":
     test_overlay_drawer_uses_shorter_full_height_and_collapsed_bar()
     test_volume_meters_are_side_by_side_with_same_width()
     test_volume_fill_color_can_be_softened()
+    test_notification_entry_style_has_distinct_fill_and_border()
     print("overlay layout tests passed")
