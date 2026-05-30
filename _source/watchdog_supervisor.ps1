@@ -202,6 +202,18 @@ function Get-ExitCodeText {
     }
 
     try {
+        if (-not $Process.HasExited) {
+            return "still-running"
+        }
+    } catch {
+    }
+
+    try {
+        [void]$Process.WaitForExit(1000)
+    } catch {
+    }
+
+    try {
         $Code = $Process.ExitCode
         if ($null -ne $Code -and -not [string]::IsNullOrWhiteSpace([string]$Code)) {
             return [string]$Code
@@ -209,7 +221,7 @@ function Get-ExitCodeText {
     } catch {
     }
 
-    return "unknown"
+    return "unknown (process handle did not expose an exit code)"
 }
 
 function Stop-ProcessTree {
@@ -447,12 +459,65 @@ function Get-SuppressedAlarmDetail {
     param([object]$Health)
 
     return (
-        "audible alarm suppressed ({0}/{1} failures in {2}; watchdog_down={3}s)" -f
+        "audible alarm suppressed ({0}/{1} watchdog failures in {2}; watchdog_down={3}s)" -f
         $Health.crash_count_window,
         $Health.crash_alert_count,
         (Get-MinutesLabel -Seconds ([double]$Health.window_seconds)).ToLower(),
         $Health.monitor_down_seconds
     )
+}
+
+function Get-LogTailSummary {
+    param(
+        [string]$Path,
+        [int]$MaxLines = 8
+    )
+
+    if (-not (Test-Path $Path)) {
+        return ""
+    }
+
+    try {
+        $Lines = @(Get-Content -LiteralPath $Path -Tail $MaxLines -ErrorAction Stop |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+        if (@($Lines).Count -eq 0) {
+            return ""
+        }
+        return ($Lines -join " | ")
+    } catch {
+        return ""
+    }
+}
+
+function Write-WatchdogFailureDiagnostics {
+    $StdErrTail = Get-LogTailSummary -Path $StdErr
+    if (-not [string]::IsNullOrWhiteSpace($StdErrTail)) {
+        Write-TimestampedHost ("Recent watchdog stderr: {0}" -f $StdErrTail) "DarkYellow"
+    }
+}
+
+function Preserve-RestartLog {
+    param(
+        [string]$Path,
+        [string]$Prefix,
+        [int]$RestartCount
+    )
+
+    if (-not (Test-Path $Path)) {
+        return
+    }
+
+    try {
+        $Stamp = (Get-Date).ToString("yyyyMMdd_HHmmss_fff")
+        $Destination = Join-Path $LogDir ("{0}_{1:D4}_{2}.log" -f $Prefix, $RestartCount, $Stamp)
+        Move-Item -LiteralPath $Path -Destination $Destination -Force
+        Get-ChildItem -LiteralPath $LogDir -Filter ("{0}_*.log" -f $Prefix) -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -Skip 10 |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    } catch {
+        Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Write-NewWatchdogOutput {
@@ -497,9 +562,11 @@ function Write-NewWatchdogOutput {
 }
 
 function Start-WatchdogProcess {
+    param([int]$RestartCount = 0)
+
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
-    Remove-Item -LiteralPath $StdOut -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $StdErr -Force -ErrorAction SilentlyContinue
+    Preserve-RestartLog -Path $StdOut -Prefix "watchdog_stdout" -RestartCount $RestartCount
+    Preserve-RestartLog -Path $StdErr -Prefix "watchdog_stderr" -RestartCount $RestartCount
 
     if (Test-Path $Exe) {
         return Start-Process `
@@ -635,13 +702,13 @@ try {
 
         $Overlay = Update-OverlayProcess -Overlay $Overlay
         try {
-            $Watchdog = Start-WatchdogProcess
+            $Watchdog = Start-WatchdogProcess -RestartCount $RestartCount
         } catch {
             $RestartCount += 1
             Record-SupervisorAbnormal -Reason "watchdog_start_failed" -ExitCode "start_failed"
             $Health = Update-SupervisorHealth -WatchdogAvailable $false
             Write-SupervisorHeartbeat -Watchdog $null -RestartCount $RestartCount -Status "watchdog_start_failed" -Health $Health
-            $Message = "watchdog could not start: {0}; retrying in {1}s (restart #{2})" -f $_.Exception.Message, $RestartDelaySeconds, $RestartCount
+            $Message = "watchdog could not start: {0}; retrying in {1}s (supervisor restart #{2} since launch)" -f $_.Exception.Message, $RestartDelaySeconds, $RestartCount
             if (-not (Invoke-SupervisorHealthAlarm -Health $Health -Message $Message)) {
                 Write-TimestampedHost ("{0}; {1}" -f $Message, (Get-SuppressedAlarmDetail -Health $Health)) "Yellow"
             }
@@ -686,7 +753,8 @@ try {
                 Record-SupervisorAbnormal -Reason "watchdog_exited" -ExitCode $ExitCodeText
                 $Health = Update-SupervisorHealth -WatchdogAvailable $false
                 Write-SupervisorHeartbeat -Watchdog $Watchdog -RestartCount $RestartCount -Status "watchdog_exited" -Health $Health
-                $Message = "watchdog exited with code {0}; restarting in {1}s (restart #{2})" -f $ExitCodeText, $RestartDelaySeconds, $RestartCount
+                Write-WatchdogFailureDiagnostics
+                $Message = "watchdog exited with code {0}; restarting in {1}s (supervisor restart #{2} since launch)" -f $ExitCodeText, $RestartDelaySeconds, $RestartCount
                 if (-not (Invoke-SupervisorHealthAlarm -Health $Health -Message $Message)) {
                     Write-TimestampedHost ("{0}; {1}" -f $Message, (Get-SuppressedAlarmDetail -Health $Health)) "Yellow"
                 }
@@ -700,7 +768,8 @@ try {
                     Record-SupervisorAbnormal -Reason "watchdog_stale"
                     $Health = Update-SupervisorHealth -WatchdogAvailable $false
                     Write-SupervisorHeartbeat -Watchdog $Watchdog -RestartCount $RestartCount -Status "watchdog_stale" -Health $Health
-                    $Message = "watchdog heartbeat is stale ({0:N1}s old); restarting in {1}s (restart #{2})" -f $AgeSeconds, $RestartDelaySeconds, $RestartCount
+                    Write-WatchdogFailureDiagnostics
+                    $Message = "watchdog heartbeat is stale ({0:N1}s old); restarting in {1}s (supervisor restart #{2} since launch)" -f $AgeSeconds, $RestartDelaySeconds, $RestartCount
                     if (-not (Invoke-SupervisorHealthAlarm -Health $Health -Message $Message)) {
                         Write-TimestampedHost ("{0}; {1}" -f $Message, (Get-SuppressedAlarmDetail -Health $Health)) "Yellow"
                     }
@@ -712,7 +781,8 @@ try {
                 Record-SupervisorAbnormal -Reason "watchdog_missing_heartbeat"
                 $Health = Update-SupervisorHealth -WatchdogAvailable $false
                 Write-SupervisorHeartbeat -Watchdog $Watchdog -RestartCount $RestartCount -Status "watchdog_missing_heartbeat" -Health $Health
-                $Message = "watchdog did not write a heartbeat after {0}s; restarting in {1}s (restart #{2})" -f $StartupGraceSeconds, $RestartDelaySeconds, $RestartCount
+                Write-WatchdogFailureDiagnostics
+                $Message = "watchdog did not write a heartbeat after {0}s; restarting in {1}s (supervisor restart #{2} since launch)" -f $StartupGraceSeconds, $RestartDelaySeconds, $RestartCount
                 if (-not (Invoke-SupervisorHealthAlarm -Health $Health -Message $Message)) {
                     Write-TimestampedHost ("{0}; {1}" -f $Message, (Get-SuppressedAlarmDetail -Health $Health)) "Yellow"
                 }
