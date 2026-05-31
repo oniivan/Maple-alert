@@ -98,8 +98,30 @@ window_title = ""
         assert "capture.window_title" in report
 
 
+def test_empty_title_allowed_when_title_fallback_disabled() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config_path = Path(temp_dir) / "config.toml"
+        config_path.write_text(
+            """
+[capture]
+target_window = true
+window_title = ""
+process_match_enabled = true
+process_names = ["msw.exe"]
+title_fallback_enabled = false
+""",
+            encoding="utf-8",
+        )
+
+        config = load_config(config_path)
+        issues = validate_config(config)
+
+        assert not any(issue["code"] == "window_title_empty" for issue in issues)
+
+
 if __name__ == "__main__":
     test_config_local_overrides_base_config_and_is_redacted()
     test_validate_config_reports_missing_remote_pair_without_secrets()
     test_setup_check_includes_config_validation_summary()
+    test_empty_title_allowed_when_title_fallback_disabled()
     print("config safety tests passed")

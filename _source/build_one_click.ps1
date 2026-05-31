@@ -101,6 +101,7 @@ function Write-ReleaseProvenance {
         "config.toml",
         "README.md",
         "README_FIRST.txt",
+        "templates\free_market_title.png",
         "_internal\watchdog_supervisor.ps1"
     )) {
         if (Test-Path (Join-Path $RepoRoot $Path)) {

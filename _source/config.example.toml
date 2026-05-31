@@ -1,6 +1,10 @@
 [capture]
 # Window title substring to look for. If not found, the script falls back to the selected monitor.
 window_title = "Maple"
+# Prefer matching the real client process first. Title matching remains a backup.
+process_match_enabled = true
+process_names = ["msw.exe", "msw"]
+title_fallback_enabled = true
 # Prevent this tool, browsers, editors, terminals, and Explorer windows from being selected when window_title = "Maple".
 ignored_window_title_substrings = [
   "Maple Alert",
@@ -109,6 +113,17 @@ dot_pixel_count_min = 50
 dot_mean_saturation_min = 240
 dot_mean_value_min = 220
 
+[detection.free_market]
+# Strict title-strip template match inside the top-left minimap area.
+enabled = true
+template_path = "templates/free_market_title.png"
+threshold = 0.90
+scale_min = 0.85
+scale_max = 1.20
+scale_steps = 15
+search_width = 560
+search_height = 70
+
 [alerts]
 # Safe mode keeps notifications local: console + sound + log only.
 safe_mode = true
@@ -129,6 +144,12 @@ minimap_repeat_seconds = 30
 detection_log_interval_seconds = 5
 # Prints a heartbeat even when nothing is detected, so the console does not look frozen.
 status_interval_seconds = 15
+
+[free_market_exit]
+enabled = true
+countdown_seconds = 15
+reset_after_clear_seconds = 12
+failure_status_seconds = 20
 
 [telegram]
 # Keep private values out of the tracked config.toml when possible.

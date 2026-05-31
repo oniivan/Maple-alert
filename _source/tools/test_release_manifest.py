@@ -29,6 +29,7 @@ def test_release_manifest_and_checksums_match_release_surface() -> None:
         "START_MAPLE_ALERT.bat",
         "MapleAlert.exe",
         "config.toml",
+        "templates/free_market_title.png",
         "_internal/watchdog_supervisor.ps1",
         "alert_sounds/captcha_100pct.wav",
         "alert_sounds/minimap_red_100pct.wav",

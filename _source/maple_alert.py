@@ -18,13 +18,14 @@ import wave
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import mss
 import numpy as np
 
 from detectors.minimap_red import detect_minimap_red, locate_minimap_content_rect
+from detectors.minimap_title import detect_free_market_title
 from vision_core import (
     DetectionResult,
     Rect,
@@ -75,6 +76,9 @@ except ModuleNotFoundError:  # Python 3.10 fallback.
 DEFAULT_CONFIG: dict[str, Any] = {
     "capture": {
         "window_title": "Maple",
+        "process_match_enabled": True,
+        "process_names": ["msw.exe", "msw"],
+        "title_fallback_enabled": True,
         "ignored_window_title_substrings": [
             "Maple Alert",
             "Maple Alert Health",
@@ -166,6 +170,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "dot_mean_saturation_min": 240,
             "dot_mean_value_min": 220,
         },
+        "free_market": {
+            "enabled": True,
+            "template_path": "templates/free_market_title.png",
+            "threshold": 0.90,
+            "scale_min": 0.85,
+            "scale_max": 1.20,
+            "scale_steps": 15,
+            "search_width": 560,
+            "search_height": 70,
+        },
     },
     "alerts": {
         "safe_mode": True,
@@ -181,6 +195,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "minimap_repeat_seconds": 30,
         "detection_log_interval_seconds": 5,
         "status_interval_seconds": 15,
+    },
+    "free_market_exit": {
+        "enabled": True,
+        "countdown_seconds": 15,
+        "reset_after_clear_seconds": 12,
+        "failure_status_seconds": 20,
     },
     "telegram": {"bot_token": "", "chat_id": ""},
     "discord": {
@@ -404,6 +424,22 @@ class SystemVolumeState:
         if self.percent is not None and self.percent < SYSTEM_VOLUME_WARNING_PERCENT:
             return True
         return False
+
+
+@dataclass(frozen=True)
+class WindowInfo:
+    title: str
+    rect: Rect
+    hwnd: int | None = None
+    pid: int | None = None
+    exe_name: str = ""
+    match_source: str = ""
+
+
+@dataclass(frozen=True)
+class ExitDecision:
+    action: str | None = None
+    seconds_left: int | None = None
 
 
 class WatchdogFailureTracker:
@@ -911,8 +947,87 @@ def setup_logging(config: dict[str, Any]) -> logging.Logger:
     return logger
 
 
-def list_windows() -> list[tuple[str, Rect]]:
-    found: list[tuple[str, Rect]] = []
+def process_names_by_pid() -> dict[int, str]:
+    try:
+        import psutil
+    except Exception:
+        return {}
+
+    names: dict[int, str] = {}
+    try:
+        for proc in psutil.process_iter(["pid", "name"]):
+            try:
+                pid = int(proc.info.get("pid") or 0)
+                name = str(proc.info.get("name") or "").strip()
+                if pid and name:
+                    names[pid] = name
+            except Exception:
+                continue
+    except Exception:
+        return {}
+    return names
+
+
+def list_window_infos() -> list[WindowInfo]:
+    found: list[WindowInfo] = []
+    pid_names = process_names_by_pid()
+
+    if os.name == "nt":
+        try:
+            from ctypes import wintypes
+
+            user32 = ctypes.windll.user32
+
+            class WinRect(ctypes.Structure):
+                _fields_ = [
+                    ("left", ctypes.c_long),
+                    ("top", ctypes.c_long),
+                    ("right", ctypes.c_long),
+                    ("bottom", ctypes.c_long),
+                ]
+
+            enum_proc_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+            def enum_handler(hwnd: int, _: int) -> bool:
+                try:
+                    if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
+                        return True
+                    length = int(user32.GetWindowTextLengthW(hwnd))
+                    if length <= 0:
+                        return True
+                    buffer = ctypes.create_unicode_buffer(length + 1)
+                    user32.GetWindowTextW(hwnd, buffer, length + 1)
+                    title = buffer.value.strip()
+                    if not title:
+                        return True
+                    rect_raw = WinRect()
+                    if not user32.GetWindowRect(hwnd, ctypes.byref(rect_raw)):
+                        return True
+                    width = int(rect_raw.right - rect_raw.left)
+                    height = int(rect_raw.bottom - rect_raw.top)
+                    if width <= 0 or height <= 0:
+                        return True
+                    pid = wintypes.DWORD()
+                    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                    pid_value = int(pid.value or 0)
+                    found.append(
+                        WindowInfo(
+                            title=title,
+                            rect=Rect(int(rect_raw.left), int(rect_raw.top), width, height),
+                            hwnd=int(hwnd),
+                            pid=pid_value or None,
+                            exe_name=pid_names.get(pid_value, ""),
+                        )
+                    )
+                except Exception:
+                    return True
+                return True
+
+            user32.EnumWindows(enum_proc_type(enum_handler), 0)
+            if found:
+                return found
+        except Exception:
+            found.clear()
 
     try:
         import pygetwindow as gw
@@ -923,7 +1038,7 @@ def list_windows() -> list[tuple[str, Rect]]:
                 continue
             if getattr(window, "isMinimized", False):
                 continue
-            found.append((title, Rect(window.left, window.top, window.width, window.height)))
+            found.append(WindowInfo(title, Rect(window.left, window.top, window.width, window.height)))
         if found:
             return found
     except Exception:
@@ -942,13 +1057,17 @@ def list_windows() -> list[tuple[str, Rect]]:
             width = right - left
             height = bottom - top
             if width > 0 and height > 0:
-                found.append((title, Rect(left, top, width, height)))
+                found.append(WindowInfo(title, Rect(left, top, width, height)))
 
         win32gui.EnumWindows(enum_handler, None)
     except Exception:
         pass
 
     return found
+
+
+def list_windows() -> list[tuple[str, Rect]]:
+    return [(window.title, window.rect) for window in list_window_infos()]
 
 
 def ignored_window_title_substrings(capture_cfg: dict[str, Any]) -> list[str]:
@@ -970,6 +1089,87 @@ def ignored_window_title_substrings(capture_cfg: dict[str, Any]) -> list[str]:
 def is_ignored_window_title(title: str, ignored_fragments: list[str]) -> bool:
     folded_title = title.casefold().strip()
     return any(fragment in folded_title for fragment in ignored_fragments)
+
+
+def target_process_name_candidates(capture_cfg: dict[str, Any]) -> list[str]:
+    raw_names = capture_cfg.get("process_names", DEFAULT_CONFIG["capture"]["process_names"])
+    if isinstance(raw_names, str):
+        raw_names = [raw_names]
+    if not isinstance(raw_names, list):
+        raw_names = DEFAULT_CONFIG["capture"]["process_names"]
+    return [str(name).casefold().strip() for name in raw_names if str(name).strip()]
+
+
+def process_name_matches(exe_name: str, candidates: list[str]) -> bool:
+    folded = exe_name.casefold().strip()
+    if not folded:
+        return False
+    folded_stem = folded[:-4] if folded.endswith(".exe") else folded
+    for candidate in candidates:
+        cand = candidate.casefold().strip()
+        cand_stem = cand[:-4] if cand.endswith(".exe") else cand
+        if not cand_stem:
+            continue
+        if folded == cand or folded_stem == cand_stem or cand_stem in folded_stem:
+            return True
+    return False
+
+
+def find_target_window(capture_cfg: dict[str, Any]) -> WindowInfo | None:
+    ignored = ignored_window_title_substrings(capture_cfg)
+    windows = [
+        window
+        for window in list_window_infos()
+        if not is_ignored_window_title(window.title, ignored)
+    ]
+    title_needle = str(capture_cfg.get("window_title", "")).casefold().strip()
+    candidates = target_process_name_candidates(capture_cfg)
+
+    if bool(capture_cfg.get("process_match_enabled", True)):
+        process_matches = [
+            window
+            for window in windows
+            if process_name_matches(window.exe_name, candidates)
+        ]
+        if process_matches:
+            process_matches.sort(
+                key=lambda window: (
+                    title_needle in window.title.casefold() if title_needle else False,
+                    window.rect.width * window.rect.height,
+                ),
+                reverse=True,
+            )
+            picked = process_matches[0]
+            return WindowInfo(
+                picked.title,
+                picked.rect,
+                hwnd=picked.hwnd,
+                pid=picked.pid,
+                exe_name=picked.exe_name,
+                match_source="process",
+            )
+
+    if not bool(capture_cfg.get("title_fallback_enabled", True)):
+        return None
+    if not title_needle:
+        return None
+    title_matches = [
+        window
+        for window in windows
+        if title_needle in window.title.casefold()
+    ]
+    if not title_matches:
+        return None
+    title_matches.sort(key=lambda window: window.rect.width * window.rect.height, reverse=True)
+    picked = title_matches[0]
+    return WindowInfo(
+        picked.title,
+        picked.rect,
+        hwnd=picked.hwnd,
+        pid=picked.pid,
+        exe_name=picked.exe_name,
+        match_source="title",
+    )
 
 
 def find_window_rect(title_substring: str, ignored_titles: list[str] | None = None) -> Rect | None:
@@ -1003,17 +1203,19 @@ def get_monitor_rect(sct: mss.mss, monitor_index: int) -> Rect:
     )
 
 
-def resolve_capture_rect(sct: mss.mss, config: dict[str, Any]) -> tuple[Rect, str]:
+def resolve_capture_target(sct: mss.mss, config: dict[str, Any]) -> tuple[Rect, str, WindowInfo | None]:
     capture_cfg = config["capture"]
     if capture_cfg["target_window"]:
-        window_rect = find_window_rect(
-            capture_cfg["window_title"],
-            ignored_window_title_substrings(capture_cfg),
-        )
-        if window_rect:
-            return window_rect, "window"
+        target = find_target_window(capture_cfg)
+        if target:
+            return target.rect, "window", target
 
-    return get_monitor_rect(sct, int(capture_cfg["monitor_index"])), "monitor"
+    return get_monitor_rect(sct, int(capture_cfg["monitor_index"])), "monitor", None
+
+
+def resolve_capture_rect(sct: mss.mss, config: dict[str, Any]) -> tuple[Rect, str]:
+    rect, source, _target = resolve_capture_target(sct, config)
+    return rect, source
 
 
 class CaptchaDetector:
@@ -1533,6 +1735,222 @@ class AlertManager:
         except Exception as exc:
             self.logger.warning("Could not play alert sound: %s", exc)
 
+
+class FreeMarketExitController:
+    def __init__(self, config: dict[str, Any]) -> None:
+        cfg = config.get("free_market_exit", {})
+        self.enabled = bool(cfg.get("enabled", True))
+        self.countdown_seconds = max(1.0, float(cfg.get("countdown_seconds", 15)))
+        self.reset_after_clear_seconds = max(1.0, float(cfg.get("reset_after_clear_seconds", 12)))
+        self.failure_status_seconds = max(1.0, float(cfg.get("failure_status_seconds", 20)))
+        self.state = "armed"
+        self.prompt_started_at: float | None = None
+        self.clear_since: float | None = None
+        self.exit_requested = False
+        self.target_pid: int | None = None
+        self.failure_message = ""
+        self.failure_until_epoch = 0.0
+
+    def update(
+        self,
+        result: DetectionResult,
+        *,
+        now: float | None = None,
+        target_pid: int | None = None,
+    ) -> ExitDecision:
+        timestamp = time.monotonic() if now is None else float(now)
+        if not self.enabled:
+            return ExitDecision()
+
+        if result.detected:
+            self.clear_since = None
+            if target_pid:
+                self.target_pid = int(target_pid)
+            if self.state == "armed":
+                self.state = "prompting"
+                self.prompt_started_at = timestamp
+                self.exit_requested = False
+                return ExitDecision("show_prompt", int(round(self.countdown_seconds)))
+            if self.state == "prompting" and self.prompt_started_at is not None:
+                elapsed = timestamp - self.prompt_started_at
+                seconds_left = max(0, int(math.ceil(self.countdown_seconds - elapsed)))
+                if elapsed >= self.countdown_seconds and not self.exit_requested:
+                    self.exit_requested = True
+                    return ExitDecision("exit", 0)
+                return ExitDecision(None, seconds_left)
+            return ExitDecision()
+
+        if self.state in {"prompting", "cancelled"}:
+            self.clear_since = self.clear_since or timestamp
+            if self.state == "prompting":
+                self.state = "cancelled"
+                return ExitDecision("dismiss_prompt")
+            if timestamp - self.clear_since >= self.reset_after_clear_seconds:
+                self.reset()
+                return ExitDecision("reset")
+        return ExitDecision()
+
+    def cancel(self, *, now: float | None = None) -> None:
+        if self.state == "prompting":
+            self.state = "cancelled"
+            self.clear_since = None
+        _ = now
+
+    def reset(self) -> None:
+        self.state = "armed"
+        self.prompt_started_at = None
+        self.clear_since = None
+        self.exit_requested = False
+        self.target_pid = None
+
+    def report_failure(self, message: str, *, now_epoch: float | None = None) -> None:
+        timestamp = time.time() if now_epoch is None else float(now_epoch)
+        self.failure_message = message
+        self.failure_until_epoch = timestamp + self.failure_status_seconds
+
+    def failure_active(self, *, now_epoch: float | None = None) -> bool:
+        timestamp = time.time() if now_epoch is None else float(now_epoch)
+        return bool(self.failure_message) and timestamp < self.failure_until_epoch
+
+
+class FreeMarketExitPrompt:
+    def __init__(self, countdown_seconds: int, cancel_callback: Callable[[], None] | None = None) -> None:
+        self.countdown_seconds = max(1, int(countdown_seconds))
+        self.cancel_callback = cancel_callback
+        self.cancelled = threading.Event()
+        self.closed = threading.Event()
+        self._root: Any = None
+        self._thread = threading.Thread(target=self._run, name="free-market-exit-prompt", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def close(self) -> None:
+        root = self._root
+        if root is not None:
+            try:
+                root.after(0, root.destroy)
+            except Exception:
+                pass
+
+    def consume_cancelled(self) -> bool:
+        if self.cancelled.is_set():
+            self.cancelled.clear()
+            return True
+        return False
+
+    def _run(self) -> None:
+        try:
+            import tkinter as tk
+        except Exception:
+            self.closed.set()
+            return
+
+        root = tk.Tk()
+        self._root = root
+        root.title("Maple Alert")
+        root.configure(bg="#111418")
+        root.attributes("-topmost", True)
+        root.resizable(False, False)
+
+        width = 460
+        height = 156
+        screen_w = root.winfo_screenwidth()
+        screen_h = root.winfo_screenheight()
+        root.geometry(f"{width}x{height}+{(screen_w - width) // 2}+{(screen_h - height) // 2}")
+
+        canvas = tk.Canvas(root, width=width, height=height, bg="#111418", highlightthickness=0)
+        canvas.pack(fill="both", expand=True)
+        canvas.create_rectangle(0, 0, width - 1, height - 1, fill="#111418", outline="#2b323b")
+        canvas.create_rectangle(8, 8, width - 9, height - 9, fill="#151a20", outline="#ff6b60")
+        dot = canvas.create_oval(24, 24, 38, 38, fill="#ff3b30", outline="")
+        label = canvas.create_text(
+            54,
+            30,
+            anchor="w",
+            fill="#ffe3e0",
+            font=("Consolas", 11, "bold"),
+            text="You were sent to the free market.",
+        )
+        countdown_label = canvas.create_text(
+            width // 2,
+            72,
+            anchor="center",
+            fill="#f3fff6",
+            font=("Consolas", 12, "bold"),
+            text="",
+        )
+        button = canvas.create_rectangle(168, 108, 292, 138, fill="#1b2430", outline="#ff6b60")
+        button_label = canvas.create_text(
+            230,
+            123,
+            anchor="center",
+            fill="#ffe3e0",
+            font=("Consolas", 10, "bold"),
+            text="CANCEL",
+        )
+        state = {"remaining": self.countdown_seconds, "pulse": False}
+
+        def cancel() -> None:
+            self.cancelled.set()
+            if self.cancel_callback:
+                try:
+                    self.cancel_callback()
+                except Exception:
+                    pass
+            root.destroy()
+
+        def tick() -> None:
+            remaining = max(0, int(state["remaining"]))
+            canvas.itemconfigure(
+                countdown_label,
+                text=f"The game will exit in {remaining} seconds.",
+            )
+            state["pulse"] = not bool(state["pulse"])
+            canvas.itemconfigure(dot, fill="#ff3b30" if state["pulse"] else "#7a1815")
+            if remaining <= 0:
+                return
+            state["remaining"] = remaining - 1
+            root.after(1000, tick)
+
+        def on_click(event: Any) -> None:
+            x = int(event.x)
+            y = int(event.y)
+            coords = canvas.coords(button)
+            if coords[0] <= x <= coords[2] and coords[1] <= y <= coords[3]:
+                cancel()
+
+        canvas.tag_raise(label)
+        canvas.tag_raise(button)
+        canvas.tag_raise(button_label)
+        canvas.bind("<Button-1>", on_click)
+        root.protocol("WM_DELETE_WINDOW", cancel)
+        tick()
+        try:
+            root.mainloop()
+        finally:
+            self.closed.set()
+
+
+def terminate_process_tree(pid: int, timeout_seconds: float = 8.0) -> tuple[bool, str]:
+    if pid <= 0:
+        return False, "missing target pid"
+    try:
+        completed = subprocess.run(
+            ["taskkill", "/PID", str(int(pid)), "/T", "/F"],
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except Exception as exc:
+        return False, str(exc)
+    if completed.returncode == 0:
+        return True, (completed.stdout or "").strip()
+    detail = (completed.stderr or completed.stdout or "").strip()
+    return False, detail or f"taskkill exited with code {completed.returncode}"
+
+
 def draw_captcha_debug(bgr: np.ndarray, result: DetectionResult) -> np.ndarray:
     out = bgr.copy()
     cv2.putText(
@@ -1738,15 +2156,21 @@ def log_monitor_status(
 
 
 def print_window_list() -> None:
-    windows = list_windows()
+    windows = list_window_infos()
     if not windows:
-        print("No windows found by pygetwindow/win32gui.")
+        print("No windows found.")
         return
-    for title, rect in windows:
-        safe_title = title.encode(sys.stdout.encoding or "utf-8", errors="replace").decode(
+    for window in windows:
+        safe_title = window.title.encode(sys.stdout.encoding or "utf-8", errors="replace").decode(
             sys.stdout.encoding or "utf-8", errors="replace"
         )
-        print(f"{safe_title} | left={rect.left} top={rect.top} width={rect.width} height={rect.height}")
+        print(
+            (
+                f"{safe_title} | pid={window.pid or ''} exe={window.exe_name or ''} "
+                f"left={window.rect.left} top={window.rect.top} "
+                f"width={window.rect.width} height={window.rect.height}"
+            ).rstrip()
+        )
 
 
 def is_sensitive_config_key(key: str) -> bool:
@@ -1859,13 +2283,17 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
     capture_cfg = config.get("capture", {})
     alerts_cfg = config.get("alerts", {})
 
-    if bool(capture_cfg.get("target_window", False)) and not str(capture_cfg.get("window_title", "")).strip():
+    if (
+        bool(capture_cfg.get("target_window", False))
+        and bool(capture_cfg.get("title_fallback_enabled", True))
+        and not str(capture_cfg.get("window_title", "")).strip()
+    ):
         issues.append(
             config_issue(
                 "error",
                 "window_title_empty",
                 "capture.window_title",
-                "capture.window_title is required when target_window is true.",
+                "capture.window_title is required when title fallback is enabled.",
             )
         )
 
@@ -2499,6 +2927,7 @@ def write_heartbeat(
     source: str,
     rect: Rect,
     alert_status: dict[str, Any] | None = None,
+    target: WindowInfo | None = None,
 ) -> None:
     path = resolve_config_path(config, config["watchdog"]["heartbeat_file"])
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -2513,6 +2942,9 @@ def write_heartbeat(
         "target_window": target_window,
         "window_title": str(config["capture"].get("window_title", "")),
         "maple_detected": (source == "window") if target_window else True,
+        "target_pid": target.pid if target else None,
+        "target_exe": target.exe_name if target else "",
+        "target_match_source": target.match_source if target else "",
         "runtime_scale": config.get("_runtime_scale", {}),
         "alert_status": alert_status or {
             "lie_last_seen_epoch": None,
@@ -3486,6 +3918,10 @@ def run_overlay(config: dict[str, Any]) -> int:
             return "LIE DETECTOR ALERT"
         if active_alert == "player_detected":
             return "PLAYER DETECTED ALERT"
+        if active_alert == "free_market_exit":
+            return "FREE MARKET EXIT"
+        if active_alert == "exit_failed":
+            return "FAILED TO EXIT MSW.EXE!"
         return "ALERT"
 
     def refresh_capture_notice(payload: dict[str, Any]) -> None:
@@ -3670,6 +4106,7 @@ def run_test_image(config: dict[str, Any], args: argparse.Namespace) -> int:
     minimap_bgr = crop_bgr(image, minimap_rect)
     captcha_result = detector.detect(captcha_bgr)
     minimap_result, minimap_mask = detect_minimap_red(minimap_bgr, config)
+    free_market_result = detect_free_market_title(minimap_bgr, config)
     lower_name = image_path.name.casefold()
     expected_captcha: bool | None = None
     if "noncaptcha" in lower_name:
@@ -3702,6 +4139,11 @@ def run_test_image(config: dict[str, Any], args: argparse.Namespace) -> int:
                     "detected": minimap_result.detected,
                     "confidence": round(minimap_result.confidence, 4),
                     "info": minimap_result.info,
+                },
+                "free_market": {
+                    "detected": free_market_result.detected,
+                    "confidence": round(free_market_result.confidence, 4),
+                    "info": free_market_result.info,
                 },
                 "debug_crops": str(resolve_config_path(config, config["debug"]["crop_dir"])),
                 "blue_block_crop": str(blue_block_crop_path) if blue_block_crop_path else None,
@@ -3743,6 +4185,8 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
     logger = setup_logging(config)
     detector = CaptchaDetector(config, logger)
     alerts = AlertManager(config, logger)
+    free_market_exit = FreeMarketExitController(config)
+    free_market_prompt: FreeMarketExitPrompt | None = None
     blue_block_crop_saver = make_blue_block_crop_saver(config, logger)
     red_dot_crop_saver = make_red_dot_crop_saver(config, logger)
 
@@ -3754,6 +4198,7 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
     last_heartbeat = 0.0
     base_rect: Rect | None = None
     base_source = ""
+    current_target: WindowInfo | None = None
     parent_pid = configured_parent_pid(config)
 
     logger.info(
@@ -3778,8 +4223,12 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
                 break
 
             if base_rect is None or loop_start - last_relocate >= relocate_interval:
-                new_rect, new_source = resolve_capture_rect(sct, config)
-                if new_rect != base_rect or new_source != base_source:
+                new_rect, new_source, new_target = resolve_capture_target(sct, config)
+                target_changed = (
+                    (new_target.pid if new_target else None)
+                    != (current_target.pid if current_target else None)
+                )
+                if new_rect != base_rect or new_source != base_source or target_changed:
                     previous_rect = base_rect
                     previous_source = base_source
                     scale_info = set_runtime_scale(config, new_rect)
@@ -3845,13 +4294,21 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
                             flush=True,
                         )
                         logger.warning(
-                            "Maple window title '%s' was not found; falling back to monitor_index=%s. "
-                            "Run 'MapleAlert.exe --list-windows' and copy the visible title into config.toml if needed.",
-                            config["capture"]["window_title"],
+                            "Maple target was not found; falling back to monitor_index=%s. "
+                            "Run 'MapleAlert.exe --list-windows' to inspect visible windows if needed.",
                             config["capture"]["monitor_index"],
+                        )
+                    elif new_target is not None:
+                        logger.info(
+                            "Selected Maple target pid=%s exe=%s title=%r match=%s",
+                            new_target.pid,
+                            new_target.exe_name,
+                            new_target.title,
+                            new_target.match_source,
                         )
                 base_rect = new_rect
                 base_source = new_source
+                current_target = new_target
                 last_relocate = loop_start
 
             captcha_rect = roi_to_rect(base_rect, config["roi"]["captcha"])
@@ -3862,9 +4319,65 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
 
             captcha_result = detector.detect(captcha_bgr)
             minimap_result, minimap_mask = detect_minimap_red(minimap_bgr, config)
+            free_market_result = detect_free_market_title(minimap_bgr, config)
 
             captcha_alert_fired = alerts.handle_result("captcha", captcha_result)
             minimap_alert_fired = alerts.handle_result("minimap_red", minimap_result)
+            if free_market_prompt and free_market_prompt.consume_cancelled():
+                free_market_exit.cancel()
+                logger.info("Free Market exit prompt cancelled by user")
+                print(
+                    f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Maple detection: Free Market exit cancelled.",
+                    flush=True,
+                )
+
+            target_pid = current_target.pid if current_target and current_target.pid else None
+            exit_decision = free_market_exit.update(
+                free_market_result,
+                target_pid=target_pid,
+            )
+            if exit_decision.action == "show_prompt":
+                logger.warning("Free Market title detected; showing exit countdown prompt")
+                print(
+                    f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Maple detection: Free Market detected.",
+                    flush=True,
+                )
+                if free_market_prompt is not None:
+                    free_market_prompt.close()
+                free_market_prompt = FreeMarketExitPrompt(int(free_market_exit.countdown_seconds))
+                free_market_prompt.start()
+            elif exit_decision.action in {"dismiss_prompt", "reset"}:
+                if free_market_prompt is not None:
+                    free_market_prompt.close()
+                    free_market_prompt = None
+                if exit_decision.action == "reset":
+                    logger.info("Free Market exit state reset after clear interval")
+            elif exit_decision.action == "exit":
+                if free_market_prompt is not None:
+                    free_market_prompt.close()
+                    free_market_prompt = None
+                pid_to_close = free_market_exit.target_pid or target_pid
+                ok, detail = terminate_process_tree(int(pid_to_close or 0))
+                if ok:
+                    logger.warning("Closed Maple target pid=%s after Free Market countdown", pid_to_close)
+                    print(
+                        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Maple alert: closed msw.exe pid={pid_to_close}.",
+                        flush=True,
+                    )
+                    free_market_exit.reset()
+                else:
+                    message = f"FAILED TO EXIT MSW.EXE! {detail}"
+                    free_market_exit.report_failure(message)
+                    logger.error(message)
+                    print(
+                        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Maple alert: {message}",
+                        flush=True,
+                    )
+                    try:
+                        play_alert_sound_pattern("watchdog", read_alert_volume_percent(config, kind="watchdog"))
+                    except Exception as exc:
+                        logger.warning("Could not play exit-failure alert sound: %s", exc)
+                    send_remote_notifications(config, logger, f"Maple alert: {message}")
             if captcha_alert_fired:
                 blue_block_crop_saver.save(
                     captcha_bgr,
@@ -3896,11 +4409,24 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
                 float(config["watchdog"].get("heartbeat_interval_seconds", 2)),
             )
             if loop_start - last_heartbeat >= heartbeat_interval:
-                write_heartbeat(config, base_source, base_rect, alerts.status_snapshot())
+                alert_status = alerts.status_snapshot()
+                if free_market_exit.failure_active():
+                    alert_status["active_alert"] = "exit_failed"
+                    alert_status["exit_failure_message"] = free_market_exit.failure_message
+                elif free_market_exit.state == "prompting":
+                    alert_status["active_alert"] = "free_market_exit"
+                write_heartbeat(config, base_source, base_rect, alert_status, current_target)
                 last_heartbeat = loop_start
 
-            if config["debug"]["save_crops"] and (captcha_result.detected or minimap_result.detected or args.once):
-                suffix = "detected" if captcha_result.detected or minimap_result.detected else "sample"
+            if config["debug"]["save_crops"] and (
+                captcha_result.detected
+                or minimap_result.detected
+                or free_market_result.detected
+                or args.once
+            ):
+                suffix = "detected" if (
+                    captcha_result.detected or minimap_result.detected or free_market_result.detected
+                ) else "sample"
                 save_debug_crops(config, captcha_bgr, minimap_bgr, minimap_mask, suffix)
 
             if config["debug"]["show_windows"]:
@@ -3931,6 +4457,11 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
                                 "detected": minimap_result.detected,
                                 "confidence": round(minimap_result.confidence, 4),
                                 "info": minimap_result.info,
+                            },
+                            "free_market": {
+                                "detected": free_market_result.detected,
+                                "confidence": round(free_market_result.confidence, 4),
+                                "info": free_market_result.info,
                             },
                         },
                         indent=2,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
 from detectors.minimap_red import detect_minimap_red, locate_minimap_content_rect
+from detectors.minimap_title import detect_free_market_title
 
-__all__ = ["detect_minimap_red", "locate_minimap_content_rect"]
+__all__ = ["detect_free_market_title", "detect_minimap_red", "locate_minimap_content_rect"]
