@@ -80,8 +80,20 @@ def test_player_volume_controls_actual_wav_amplitude() -> None:
         assert peak == volume_to_pcm_amplitude(50)
 
 
+def test_alert_volume_caps_at_300_percent() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config = make_config(temp_dir)
+        write_alert_volume_percent(config, 325, kind="captcha")
+        write_alert_volume_percent(config, 300, kind="minimap_red")
+
+        assert read_alert_volume_percent(config, kind="captcha") == 300
+        assert read_alert_volume_percent(config, kind="minimap_red") == 300
+        assert volume_to_pcm_amplitude(300) > volume_to_pcm_amplitude(250)
+
+
 if __name__ == "__main__":
     test_lie_and_player_volumes_are_persisted_separately()
     test_legacy_alert_volume_falls_back_for_both_alerts()
     test_player_volume_controls_actual_wav_amplitude()
+    test_alert_volume_caps_at_300_percent()
     print("alert volume settings tests passed")

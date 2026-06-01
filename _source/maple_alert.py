@@ -56,6 +56,7 @@ ALERT_VOLUME_KEYS = {
     "captcha": "lie_detect_volume_percent",
     "minimap_red": "player_detected_volume_percent",
 }
+ALERT_VOLUME_MAX_PERCENT = 300
 SENSITIVE_KEY_FRAGMENTS = (
     "token",
     "secret",
@@ -66,6 +67,12 @@ SENSITIVE_KEY_FRAGMENTS = (
     "authorization",
 )
 REDACTED_VALUE = "<set, redacted>"
+FREE_MARKET_FORCE_CLOSED_MESSAGE = (
+    "Detected a move to free market\n"
+    "due to a possible missed captcha.\n\n"
+    "SAFEGUARD: Force-closed the game."
+)
+FREE_MARKET_EXIT_FAILED_WARNING = "WARNING: msw.exe was not detected, unable to close the game!"
 
 try:
     import tomllib
@@ -192,15 +199,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "alert_settings_file": "runtime/alert_settings.json",
         "captcha_repeat_seconds": 30,
         "minimap_required_seconds": 20,
-        "minimap_repeat_seconds": 30,
+        "minimap_repeat_seconds": 15,
         "detection_log_interval_seconds": 5,
         "status_interval_seconds": 15,
     },
     "free_market_exit": {
         "enabled": True,
-        "countdown_seconds": 15,
+        "countdown_seconds": 10,
+        "trigger_after_captcha_clear_seconds": 20,
         "reset_after_clear_seconds": 12,
         "failure_status_seconds": 20,
+        "test_request_file": "runtime/free_market_exit_test.json",
     },
     "telegram": {"bot_token": "", "chat_id": ""},
     "discord": {
@@ -672,6 +681,39 @@ def request_quit(config: dict[str, Any], source: str) -> Path:
     return path
 
 
+def free_market_exit_test_path(config: dict[str, Any]) -> Path:
+    return resolve_config_path(
+        config,
+        str(config.get("free_market_exit", {}).get("test_request_file", "runtime/free_market_exit_test.json")),
+    )
+
+
+def request_free_market_exit_test(config: dict[str, Any], source: str) -> Path:
+    path = free_market_exit_test_path(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "time": datetime.now().isoformat(timespec="seconds"),
+        "epoch_seconds": time.time(),
+        "pid": os.getpid(),
+        "source": source,
+    }
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    temp_path.replace(path)
+    return path
+
+
+def consume_free_market_exit_test(config: dict[str, Any], started_at_epoch: float) -> bool:
+    path = free_market_exit_test_path(config)
+    try:
+        if not path.exists() or path.stat().st_mtime < started_at_epoch:
+            return False
+        path.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 def quit_requested(config: dict[str, Any], started_at_epoch: float) -> bool:
     path = quit_signal_path(config)
     try:
@@ -712,9 +754,9 @@ def clamp_alert_volume_percent(value: Any, fallback: int = 200) -> int:
         if value is None:
             raise ValueError("missing volume")
         raw_value = value
-        return max(0, min(250, int(round(float(raw_value)))))
+        return max(0, min(ALERT_VOLUME_MAX_PERCENT, int(round(float(raw_value)))))
     except Exception:
-        return max(0, min(250, int(round(float(fallback)))))
+        return max(0, min(ALERT_VOLUME_MAX_PERCENT, int(round(float(fallback)))))
 
 
 def alert_volume_key_for_kind(kind: str | None = None) -> str:
@@ -945,6 +987,29 @@ def setup_logging(config: dict[str, Any]) -> logging.Logger:
     console_handler.setFormatter(fmt)
     logger.addHandler(console_handler)
     return logger
+
+
+_CONSOLE_VT_ATTEMPTED = False
+
+
+def enable_console_virtual_terminal() -> None:
+    global _CONSOLE_VT_ATTEMPTED
+    if _CONSOLE_VT_ATTEMPTED or os.name != "nt":
+        return
+    _CONSOLE_VT_ATTEMPTED = True
+    try:
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)
+        mode = ctypes.c_uint32()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+    except Exception:
+        pass
+
+
+def print_red_line(text: str) -> None:
+    enable_console_virtual_terminal()
+    print(f"\033[91m{text}\033[0m", flush=True)
 
 
 def process_names_by_pid() -> dict[int, str]:
@@ -1740,7 +1805,11 @@ class FreeMarketExitController:
     def __init__(self, config: dict[str, Any]) -> None:
         cfg = config.get("free_market_exit", {})
         self.enabled = bool(cfg.get("enabled", True))
-        self.countdown_seconds = max(1.0, float(cfg.get("countdown_seconds", 15)))
+        self.countdown_seconds = max(1.0, float(cfg.get("countdown_seconds", 10)))
+        self.trigger_after_captcha_clear_seconds = max(
+            0.0,
+            float(cfg.get("trigger_after_captcha_clear_seconds", 20)),
+        )
         self.reset_after_clear_seconds = max(1.0, float(cfg.get("reset_after_clear_seconds", 12)))
         self.failure_status_seconds = max(1.0, float(cfg.get("failure_status_seconds", 20)))
         self.state = "armed"
@@ -1748,8 +1817,43 @@ class FreeMarketExitController:
         self.clear_since: float | None = None
         self.exit_requested = False
         self.target_pid: int | None = None
+        self.prompt_source = ""
+        self.captcha_was_detected = False
+        self.captcha_clear_gate_until: float | None = None
         self.failure_message = ""
         self.failure_until_epoch = 0.0
+
+    def _update_captcha_gate(self, captcha_detected: bool, timestamp: float) -> None:
+        if captcha_detected:
+            self.captcha_was_detected = True
+            self.captcha_clear_gate_until = None
+            return
+        if self.captcha_was_detected:
+            self.captcha_was_detected = False
+            self.captcha_clear_gate_until = timestamp + self.trigger_after_captcha_clear_seconds
+
+    def _post_captcha_gate_active(self, timestamp: float) -> bool:
+        return self.captcha_clear_gate_until is not None and timestamp <= self.captcha_clear_gate_until
+
+    def _start_prompt(self, timestamp: float, target_pid: int | None, source: str) -> ExitDecision:
+        self.clear_since = None
+        if target_pid:
+            self.target_pid = int(target_pid)
+        self.state = "prompting"
+        self.prompt_started_at = timestamp
+        self.prompt_source = source
+        self.exit_requested = False
+        return ExitDecision("show_prompt", int(round(self.countdown_seconds)))
+
+    def _countdown_decision(self, timestamp: float) -> ExitDecision:
+        if self.prompt_started_at is None:
+            return ExitDecision()
+        elapsed = timestamp - self.prompt_started_at
+        seconds_left = max(0, int(math.ceil(self.countdown_seconds - elapsed)))
+        if elapsed >= self.countdown_seconds and not self.exit_requested:
+            self.exit_requested = True
+            return ExitDecision("exit", 0)
+        return ExitDecision(None, seconds_left)
 
     def update(
         self,
@@ -1757,30 +1861,40 @@ class FreeMarketExitController:
         *,
         now: float | None = None,
         target_pid: int | None = None,
+        captcha_detected: bool = False,
+        test_requested: bool = False,
     ) -> ExitDecision:
         timestamp = time.monotonic() if now is None else float(now)
         if not self.enabled:
             return ExitDecision()
 
-        if result.detected:
-            self.clear_since = None
-            if target_pid:
-                self.target_pid = int(target_pid)
+        self._update_captcha_gate(bool(captcha_detected), timestamp)
+        if test_requested:
+            if self.state != "prompting":
+                return self._start_prompt(timestamp, target_pid, "test")
+            return self._countdown_decision(timestamp)
+
+        if self.state == "failed":
+            if captcha_detected:
+                self.state = "armed"
+            else:
+                return ExitDecision()
+
+        allowed_to_prompt = bool(test_requested) or (
+            result.detected and not bool(captcha_detected) and self._post_captcha_gate_active(timestamp)
+        )
+
+        if allowed_to_prompt:
             if self.state == "armed":
-                self.state = "prompting"
-                self.prompt_started_at = timestamp
-                self.exit_requested = False
-                return ExitDecision("show_prompt", int(round(self.countdown_seconds)))
-            if self.state == "prompting" and self.prompt_started_at is not None:
-                elapsed = timestamp - self.prompt_started_at
-                seconds_left = max(0, int(math.ceil(self.countdown_seconds - elapsed)))
-                if elapsed >= self.countdown_seconds and not self.exit_requested:
-                    self.exit_requested = True
-                    return ExitDecision("exit", 0)
-                return ExitDecision(None, seconds_left)
+                return self._start_prompt(timestamp, target_pid, "free_market")
+            if self.state == "prompting":
+                return self._countdown_decision(timestamp)
             return ExitDecision()
 
-        if self.state in {"prompting", "cancelled"}:
+        if self.state == "prompting" and self.prompt_source == "test":
+            return self._countdown_decision(timestamp)
+
+        if self.state in {"prompting", "cancelled"} and not result.detected:
             self.clear_since = self.clear_since or timestamp
             if self.state == "prompting":
                 self.state = "cancelled"
@@ -1802,9 +1916,16 @@ class FreeMarketExitController:
         self.clear_since = None
         self.exit_requested = False
         self.target_pid = None
+        self.prompt_source = ""
 
     def report_failure(self, message: str, *, now_epoch: float | None = None) -> None:
         timestamp = time.time() if now_epoch is None else float(now_epoch)
+        self.state = "failed"
+        self.prompt_started_at = None
+        self.clear_since = None
+        self.exit_requested = False
+        self.target_pid = None
+        self.prompt_source = ""
         self.failure_message = message
         self.failure_until_epoch = timestamp + self.failure_status_seconds
 
@@ -1814,12 +1935,19 @@ class FreeMarketExitController:
 
 
 class FreeMarketExitPrompt:
-    def __init__(self, countdown_seconds: int, cancel_callback: Callable[[], None] | None = None) -> None:
+    def __init__(
+        self,
+        countdown_seconds: int,
+        cancel_callback: Callable[[], None] | None = None,
+        opacity: float = 0.92,
+    ) -> None:
         self.countdown_seconds = max(1, int(countdown_seconds))
         self.cancel_callback = cancel_callback
+        self.opacity = max(0.35, min(1.0, float(opacity)))
         self.cancelled = threading.Event()
         self.closed = threading.Event()
         self._root: Any = None
+        self._ui: dict[str, Any] = {}
         self._thread = threading.Thread(target=self._run, name="free-market-exit-prompt", daemon=True)
 
     def start(self) -> None:
@@ -1839,6 +1967,56 @@ class FreeMarketExitPrompt:
             return True
         return False
 
+    def show_force_closed_message(self) -> None:
+        root = self._root
+        if root is None:
+            return
+        try:
+            root.after(0, self._show_force_closed_message)
+        except Exception:
+            pass
+
+    def _show_force_closed_message(self) -> None:
+        canvas = self._ui.get("canvas")
+        if canvas is None:
+            return
+        self._ui["mode"] = "closed"
+        canvas.itemconfigure(self._ui["dot"], fill="#24d15d")
+        canvas.itemconfigure(self._ui["panel"], outline="#3b704d")
+        canvas.itemconfigure(
+            self._ui["message"],
+            fill="#d7fbe1",
+            text=FREE_MARKET_FORCE_CLOSED_MESSAGE,
+        )
+        canvas.itemconfigure(self._ui["countdown"], text="")
+        canvas.itemconfigure(self._ui["warning"], text="")
+        canvas.itemconfigure(self._ui["button"], fill="#17221b", outline="#3b704d")
+        canvas.itemconfigure(self._ui["button_label"], fill="#d7fbe1", text="CLOSE")
+
+    def show_exit_failed_warning(self) -> None:
+        root = self._root
+        if root is None:
+            return
+        try:
+            root.after(0, self._show_exit_failed_warning)
+        except Exception:
+            pass
+
+    def _show_exit_failed_warning(self) -> None:
+        canvas = self._ui.get("canvas")
+        if canvas is None:
+            return
+        self._ui["mode"] = "failed"
+        canvas.itemconfigure(self._ui["dot"], fill="#ff3b30")
+        canvas.itemconfigure(self._ui["panel"], outline="#ff6b60")
+        canvas.itemconfigure(
+            self._ui["warning"],
+            fill="#ff7b72",
+            text=FREE_MARKET_EXIT_FAILED_WARNING.upper(),
+        )
+        canvas.itemconfigure(self._ui["button"], fill="#25171a", outline="#70404a")
+        canvas.itemconfigure(self._ui["button_label"], fill="#ffb0aa", text="CLOSE")
+
     def _run(self) -> None:
         try:
             import tkinter as tk
@@ -1848,13 +2026,16 @@ class FreeMarketExitPrompt:
 
         root = tk.Tk()
         self._root = root
-        root.title("Maple Alert")
         root.configure(bg="#111418")
+        root.overrideredirect(True)
         root.attributes("-topmost", True)
+        root.attributes("-alpha", self.opacity)
         root.resizable(False, False)
+        root.bind("<Escape>", lambda _event: "break")
+        root.bind("<Return>", lambda _event: "break")
 
-        width = 460
-        height = 156
+        width = 560
+        height = 218
         screen_w = root.winfo_screenwidth()
         screen_h = root.winfo_screenheight()
         root.geometry(f"{width}x{height}+{(screen_w - width) // 2}+{(screen_h - height) // 2}")
@@ -1862,34 +2043,67 @@ class FreeMarketExitPrompt:
         canvas = tk.Canvas(root, width=width, height=height, bg="#111418", highlightthickness=0)
         canvas.pack(fill="both", expand=True)
         canvas.create_rectangle(0, 0, width - 1, height - 1, fill="#111418", outline="#2b323b")
-        canvas.create_rectangle(8, 8, width - 9, height - 9, fill="#151a20", outline="#ff6b60")
-        dot = canvas.create_oval(24, 24, 38, 38, fill="#ff3b30", outline="")
-        label = canvas.create_text(
-            54,
-            30,
+        canvas.create_rectangle(0, 0, width - 1, 28, fill="#111418", outline="#2b323b")
+        dot = canvas.create_oval(10, 9, 22, 21, fill="#ff3b30", outline="")
+        canvas.create_text(
+            32,
+            15,
             anchor="w",
             fill="#ffe3e0",
+            font=("Consolas", 10, "bold"),
+            text="SAFEGUARD",
+        )
+        panel = canvas.create_rectangle(8, 36, width - 9, height - 9, fill="#151a20", outline="#ff6b60")
+        message = canvas.create_text(
+            width // 2,
+            78,
+            anchor="center",
+            fill="#ffe3e0",
             font=("Consolas", 11, "bold"),
-            text="You were sent to the free market.",
+            justify="center",
+            text=(
+                "You were sent to the Free Market after a lie detection.\n"
+                "Safeguard: exiting the game in"
+            ),
         )
         countdown_label = canvas.create_text(
             width // 2,
-            72,
+            122,
             anchor="center",
             fill="#f3fff6",
-            font=("Consolas", 12, "bold"),
+            font=("Consolas", 18, "bold"),
             text="",
         )
-        button = canvas.create_rectangle(168, 108, 292, 138, fill="#1b2430", outline="#ff6b60")
+        warning_label = canvas.create_text(
+            width // 2,
+            148,
+            anchor="center",
+            fill="#ff7b72",
+            font=("Consolas", 9, "bold"),
+            justify="center",
+            text="",
+        )
+        button = canvas.create_rectangle(218, 166, 342, 196, fill="#1b2430", outline="#ff6b60")
         button_label = canvas.create_text(
-            230,
-            123,
+            280,
+            181,
             anchor="center",
             fill="#ffe3e0",
             font=("Consolas", 10, "bold"),
             text="CANCEL",
         )
-        state = {"remaining": self.countdown_seconds, "pulse": False}
+        state = {"remaining": self.countdown_seconds, "pulse": False, "mode": "countdown", "drag_x": 0, "drag_y": 0}
+        self._ui = {
+            "canvas": canvas,
+            "dot": dot,
+            "panel": panel,
+            "message": message,
+            "countdown": countdown_label,
+            "warning": warning_label,
+            "button": button,
+            "button_label": button_label,
+            "mode": "countdown",
+        }
 
         def cancel() -> None:
             self.cancelled.set()
@@ -1901,10 +2115,12 @@ class FreeMarketExitPrompt:
             root.destroy()
 
         def tick() -> None:
+            if self._ui.get("mode") != "countdown":
+                return
             remaining = max(0, int(state["remaining"]))
             canvas.itemconfigure(
                 countdown_label,
-                text=f"The game will exit in {remaining} seconds.",
+                text=f"{remaining} seconds.",
             )
             state["pulse"] = not bool(state["pulse"])
             canvas.itemconfigure(dot, fill="#ff3b30" if state["pulse"] else "#7a1815")
@@ -1913,18 +2129,49 @@ class FreeMarketExitPrompt:
             state["remaining"] = remaining - 1
             root.after(1000, tick)
 
+        def point_in_button(x: int, y: int) -> bool:
+            coords = canvas.coords(button)
+            return coords[0] <= x <= coords[2] and coords[1] <= y <= coords[3]
+
+        def on_press(event: Any) -> None:
+            x = int(event.x)
+            y = int(event.y)
+            if point_in_button(x, y):
+                state["mode"] = "button"
+                return
+            if y <= 28:
+                state["mode"] = "drag"
+                state["drag_x"] = x
+                state["drag_y"] = y
+                return
+            state["mode"] = "idle"
+
+        def on_drag(event: Any) -> None:
+            if state.get("mode") != "drag":
+                return
+            x = root.winfo_x() + int(event.x) - int(state["drag_x"])
+            y = root.winfo_y() + int(event.y) - int(state["drag_y"])
+            root.geometry(f"+{x}+{y}")
+
         def on_click(event: Any) -> None:
             x = int(event.x)
             y = int(event.y)
-            coords = canvas.coords(button)
-            if coords[0] <= x <= coords[2] and coords[1] <= y <= coords[3]:
-                cancel()
+            if state.get("mode") == "button" and point_in_button(x, y):
+                if self._ui.get("mode") in {"closed", "failed"}:
+                    root.destroy()
+                else:
+                    cancel()
+            state["mode"] = "idle"
 
-        canvas.tag_raise(label)
+        canvas.tag_raise(message)
+        canvas.tag_raise(countdown_label)
+        canvas.tag_raise(warning_label)
         canvas.tag_raise(button)
         canvas.tag_raise(button_label)
-        canvas.bind("<Button-1>", on_click)
-        root.protocol("WM_DELETE_WINDOW", cancel)
+        canvas.bind("<ButtonPress-1>", on_press)
+        canvas.bind("<B1-Motion>", on_drag)
+        canvas.bind("<ButtonRelease-1>", on_click)
+        root.protocol("WM_DELETE_WINDOW", lambda: None)
         tick()
         try:
             root.mainloop()
@@ -2333,7 +2580,7 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
                 path=f"alerts.{key}",
                 code=f"{key}_range",
                 min_value=0,
-                max_value=250,
+                max_value=ALERT_VOLUME_MAX_PERCENT,
             )
 
     notifications = notification_readiness_summary(config)
@@ -2861,9 +3108,9 @@ def alert_segments_for_kind(kind: str) -> list[tuple[int, int]]:
 
 
 def volume_to_pcm_amplitude(volume_percent: int | float) -> int:
-    value = max(0, min(250, int(round(float(volume_percent)))))
-    # 100% is intentionally below digital full-scale so 250% has headroom.
-    return int(round(30000 * (value / 250.0)))
+    value = max(0, min(ALERT_VOLUME_MAX_PERCENT, int(round(float(volume_percent)))))
+    # 250% stays below digital full-scale; 300% uses the remaining headroom.
+    return min(32760, int(round(30000 * (value / 250.0))))
 
 
 def synthesize_alert_wav_bytes(kind: str, volume_percent: int | float, sample_rate: int = 44100) -> bytes:
@@ -2910,6 +3157,7 @@ def export_alert_wavs(config: dict[str, Any], output_dir: str) -> int:
             100,
             200,
             250,
+            ALERT_VOLUME_MAX_PERCENT,
             read_alert_volume_percent(config, kind="captcha"),
             read_alert_volume_percent(config, kind="minimap_red"),
         }
@@ -2987,9 +3235,10 @@ def write_watchdog_heartbeat(
     temp_path.replace(path)
 
 
-def play_watchdog_sound() -> None:
+def play_watchdog_sound(config: dict[str, Any] | None = None) -> None:
     try:
-        play_alert_sound_pattern("watchdog", 200)
+        volume = read_alert_volume_percent(config, kind="captcha") if config is not None else 200
+        play_alert_sound_pattern("watchdog", volume)
     except Exception:
         pass
 
@@ -2999,7 +3248,7 @@ def watchdog_alert(config: dict[str, Any], logger: logging.Logger, message: str)
     full_message = f"[{stamp}] Maple Alert watchdog: {message}"
     print(full_message, flush=True)
     logger.error(full_message)
-    play_watchdog_sound()
+    play_watchdog_sound(config)
     send_remote_notifications(config, logger, full_message)
 
 
@@ -3275,7 +3524,7 @@ def run_overlay(config: dict[str, Any]) -> int:
     start_x = int(overlay_cfg.get("x", 320))
     start_y = int(overlay_cfg.get("y", 48))
     parent_pid = configured_parent_pid(config)
-    volume_max = 250
+    volume_max = ALERT_VOLUME_MAX_PERCENT
     volume_warn = 25
     system_volume_check_ms = 1000
     layout = overlay_control_layout()
@@ -3591,11 +3840,66 @@ def run_overlay(config: dict[str, Any]) -> int:
         settings = read_notification_settings(config)
         dialog = tk.Toplevel(root)
         state["notification_dialog"] = dialog
-        dialog.title("Maple Alert Notifications")
         dialog.configure(bg="#111418")
+        dialog.overrideredirect(True)
         dialog.attributes("-topmost", True)
+        dialog.attributes("-alpha", opacity)
         dialog.resizable(False, False)
         dialog.geometry(f"+{root.winfo_x()}+{root.winfo_y() + int(state.get('current_height', full_height)) + 8}")
+
+        chrome = tk.Frame(dialog, bg="#111418", highlightbackground="#2b323b", highlightthickness=1)
+        chrome.pack(fill="both", expand=True)
+        title_bar = tk.Frame(chrome, bg="#111418", height=28)
+        title_bar.grid(row=0, column=0, sticky="ew")
+        title_bar.grid_propagate(False)
+        title_dot = tk.Label(title_bar, text="", bg="#24d15d", width=1, height=1)
+        title_dot.place(x=10, y=10, width=12, height=12)
+        title_label = tk.Label(
+            title_bar,
+            text="DM NOTIFICATIONS",
+            bg="#111418",
+            fg="#d7fbe1",
+            font=("Consolas", 10, "bold"),
+        )
+        title_label.place(x=32, y=5)
+        close_label = tk.Label(
+            title_bar,
+            text="X",
+            bg="#25171a",
+            fg="#ff9aa8",
+            font=("Consolas", 9, "bold"),
+            width=2,
+        )
+        close_label.place(x=392, y=5, width=22, height=18)
+        title_bar.bind(
+            "<Configure>",
+            lambda event: close_label.place(x=max(0, int(event.width) - 28), y=5, width=22, height=18),
+        )
+        body = tk.Frame(chrome, bg="#111418")
+        body.grid(row=1, column=0, sticky="nsew")
+        chrome.grid_columnconfigure(0, weight=1)
+        body.grid_columnconfigure(1, weight=1)
+
+        dialog_drag = {"x": 0, "y": 0}
+
+        def close_dialog() -> None:
+            state["notification_dialog"] = None
+            dialog.destroy()
+
+        def start_dialog_drag(event: Any) -> None:
+            dialog_drag["x"] = int(event.x_root) - dialog.winfo_x()
+            dialog_drag["y"] = int(event.y_root) - dialog.winfo_y()
+
+        def move_dialog(event: Any) -> None:
+            x = int(event.x_root) - int(dialog_drag["x"])
+            y = int(event.y_root) - int(dialog_drag["y"])
+            dialog.geometry(f"+{x}+{y}")
+
+        for drag_widget in (title_bar, title_dot, title_label):
+            drag_widget.bind("<ButtonPress-1>", start_dialog_drag)
+            drag_widget.bind("<B1-Motion>", move_dialog)
+        close_label.bind("<Button-1>", lambda _event: close_dialog())
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
 
         remote_var = tk.BooleanVar(value=remote_notifications_enabled(config))
         telegram_settings = settings.get("telegram", {})
@@ -3615,7 +3919,7 @@ def run_overlay(config: dict[str, Any]) -> int:
 
         def add_label(text: str, row: int, column: int = 0, columnspan: int = 1) -> None:
             tk.Label(
-                dialog,
+                body,
                 text=text,
                 bg="#111418",
                 fg="#d7fbe1",
@@ -3625,7 +3929,7 @@ def run_overlay(config: dict[str, Any]) -> int:
         def add_entry(service: str, key: str, row: int, label_text: str, show: str = "") -> None:
             add_label(label_text, row)
             entry = tk.Entry(
-                dialog,
+                body,
                 width=38,
                 show=show,
                 font=("Consolas", 9),
@@ -3636,7 +3940,7 @@ def run_overlay(config: dict[str, Any]) -> int:
             entries[f"{service}.{key}"] = entry
 
         tk.Checkbutton(
-            dialog,
+            body,
             text="ENABLE REMOTE ALERTS",
             variable=remote_var,
             bg="#111418",
@@ -3648,7 +3952,7 @@ def run_overlay(config: dict[str, Any]) -> int:
         ).grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 2))
 
         tk.Checkbutton(
-            dialog,
+            body,
             text="TELEGRAM",
             variable=telegram_enabled_var,
             bg="#111418",
@@ -3662,7 +3966,7 @@ def run_overlay(config: dict[str, Any]) -> int:
         add_entry("telegram", "chat_id", 3, "Chat ID")
 
         tk.Checkbutton(
-            dialog,
+            body,
             text="DISCORD",
             variable=discord_enabled_var,
             bg="#111418",
@@ -3678,7 +3982,7 @@ def run_overlay(config: dict[str, Any]) -> int:
 
         status_var = tk.StringVar(value="")
         status_label = tk.Label(
-            dialog,
+            body,
             textvariable=status_var,
             bg="#111418",
             fg="#aab4c0",
@@ -3731,9 +4035,9 @@ def run_overlay(config: dict[str, Any]) -> int:
 
             threading.Thread(target=worker, daemon=True).start()
 
-        button_frame = tk.Frame(dialog, bg="#111418")
+        button_frame = tk.Frame(body, bg="#111418")
         button_frame.grid(row=9, column=0, columnspan=2, sticky="e", padx=10, pady=10)
-        for text, command in (("SAVE", save_settings), ("TEST", test_settings), ("CLOSE", dialog.destroy)):
+        for text, command in (("SAVE", save_settings), ("TEST", test_settings), ("CLOSE", close_dialog)):
             tk.Button(
                 button_frame,
                 text=text,
@@ -3768,6 +4072,20 @@ def run_overlay(config: dict[str, Any]) -> int:
         state["test_thread_active"] = True
         state["testing_kind"] = "captcha"
         draw_volume_controls()
+        try:
+            request_path = request_free_market_exit_test(config, "overlay-test")
+            print(
+                (
+                    f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+                    f"Maple detection: Free Market exit test requested. Signal written to {request_path}"
+                ),
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Maple alert: Free Market exit test request failed: {exc}",
+                flush=True,
+            )
 
         def worker() -> None:
             try:
@@ -4323,6 +4641,13 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
 
             captcha_alert_fired = alerts.handle_result("captcha", captcha_result)
             minimap_alert_fired = alerts.handle_result("minimap_red", minimap_result)
+            free_market_test_requested = consume_free_market_exit_test(config, started_at_epoch)
+            if free_market_test_requested:
+                logger.warning("Free Market exit test requested from overlay")
+                print(
+                    f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Maple detection: Free Market exit test received.",
+                    flush=True,
+                )
             if free_market_prompt and free_market_prompt.consume_cancelled():
                 free_market_exit.cancel()
                 logger.info("Free Market exit prompt cancelled by user")
@@ -4335,16 +4660,22 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
             exit_decision = free_market_exit.update(
                 free_market_result,
                 target_pid=target_pid,
+                captcha_detected=captcha_result.detected,
+                test_requested=free_market_test_requested,
             )
             if exit_decision.action == "show_prompt":
-                logger.warning("Free Market title detected; showing exit countdown prompt")
+                logger.warning("Free Market exit countdown prompt started")
                 print(
-                    f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Maple detection: Free Market detected.",
+                    f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Maple detection: Free Market exit countdown started.",
                     flush=True,
                 )
                 if free_market_prompt is not None:
                     free_market_prompt.close()
-                free_market_prompt = FreeMarketExitPrompt(int(free_market_exit.countdown_seconds))
+                prompt_opacity = float(config.get("overlay", {}).get("opacity", 0.86))
+                free_market_prompt = FreeMarketExitPrompt(
+                    int(free_market_exit.countdown_seconds),
+                    opacity=prompt_opacity,
+                )
                 free_market_prompt.start()
             elif exit_decision.action in {"dismiss_prompt", "reset"}:
                 if free_market_prompt is not None:
@@ -4353,17 +4684,18 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
                 if exit_decision.action == "reset":
                     logger.info("Free Market exit state reset after clear interval")
             elif exit_decision.action == "exit":
-                if free_market_prompt is not None:
-                    free_market_prompt.close()
-                    free_market_prompt = None
                 pid_to_close = free_market_exit.target_pid or target_pid
                 ok, detail = terminate_process_tree(int(pid_to_close or 0))
                 if ok:
-                    logger.warning("Closed Maple target pid=%s after Free Market countdown", pid_to_close)
-                    print(
-                        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Maple alert: closed msw.exe pid={pid_to_close}.",
-                        flush=True,
+                    logger.warning("Possible missed CAPTCHA; safeguard closed msw.exe pid=%s", pid_to_close)
+                    print_red_line(
+                        (
+                            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+                            f"Maple alert: POSSIBLE MISSED CAPTCHA. Safeguard: Closed msw.exe pid={pid_to_close}."
+                        )
                     )
+                    if free_market_prompt is not None:
+                        free_market_prompt.show_force_closed_message()
                     free_market_exit.reset()
                 else:
                     message = f"FAILED TO EXIT MSW.EXE! {detail}"
@@ -4373,8 +4705,10 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
                         f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Maple alert: {message}",
                         flush=True,
                     )
+                    if free_market_prompt is not None:
+                        free_market_prompt.show_exit_failed_warning()
                     try:
-                        play_alert_sound_pattern("watchdog", read_alert_volume_percent(config, kind="watchdog"))
+                        play_alert_sound_pattern("captcha", read_alert_volume_percent(config, kind="captcha"))
                     except Exception as exc:
                         logger.warning("Could not play exit-failure alert sound: %s", exc)
                     send_remote_notifications(config, logger, f"Maple alert: {message}")

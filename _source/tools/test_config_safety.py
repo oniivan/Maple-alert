@@ -119,9 +119,20 @@ title_fallback_enabled = false
         assert not any(issue["code"] == "window_title_empty" for issue in issues)
 
 
+def test_default_player_alert_repeat_is_15_seconds() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config_path = Path(temp_dir) / "config.toml"
+        config_path.write_text("", encoding="utf-8")
+
+        config = load_config(config_path)
+
+        assert config["alerts"]["minimap_repeat_seconds"] == 15
+
+
 if __name__ == "__main__":
     test_config_local_overrides_base_config_and_is_redacted()
     test_validate_config_reports_missing_remote_pair_without_secrets()
     test_setup_check_includes_config_validation_summary()
     test_empty_title_allowed_when_title_fallback_disabled()
+    test_default_player_alert_repeat_is_15_seconds()
     print("config safety tests passed")

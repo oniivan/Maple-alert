@@ -11,11 +11,12 @@ Keep the black command window open while monitoring. Closing it stops the alert 
 ## What It Does
 
 - Lie detector visual alerts
-- Minimap red-dot alerts
+- Minimap red-dot alerts with 20s persistence and 15s repeat while present
 - Low-CPU screen polling
 - Always-on-top status overlay
-- Adjustable alert volumes
+- Separate lie/player alert volumes up to 300%
 - Watchdog crash/hang recovery
+- Free Market safeguard prompt after a possible missed lie detection
 - Setup check and redacted diagnostics bundle
 - Optional Discord DM/webhook and Telegram alerts
 

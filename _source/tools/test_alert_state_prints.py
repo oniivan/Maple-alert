@@ -3,11 +3,13 @@ from __future__ import annotations
 import io
 import logging
 import sys
+import tempfile
 from contextlib import redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import maple_alert
 from maple_alert import AlertManager, DetectionResult
 
 
@@ -53,7 +55,31 @@ def test_minimap_prints_detected_alert_and_clear() -> None:
     assert "Maple detection: red minimap marker cleared." in text
 
 
+def test_player_alert_repeats_every_15_seconds_while_present() -> None:
+    config = make_config()
+    config["alerts"]["minimap_repeat_seconds"] = 15
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config["_config_dir"] = temp_dir
+        manager = AlertManager(config, logging.getLogger("test_minimap_repeat"))
+        real_monotonic = maple_alert.time.monotonic
+        now = {"value": 1000.0}
+
+        def fake_monotonic() -> float:
+            return now["value"]
+
+        maple_alert.time.monotonic = fake_monotonic
+        try:
+            assert manager.handle_result("minimap_red", DetectionResult(True, 0.9, {"red_pixels": 60}))
+            now["value"] += 14.9
+            assert not manager.handle_result("minimap_red", DetectionResult(True, 0.9, {"red_pixels": 60}))
+            now["value"] += 0.1
+            assert manager.handle_result("minimap_red", DetectionResult(True, 0.9, {"red_pixels": 60}))
+        finally:
+            maple_alert.time.monotonic = real_monotonic
+
+
 if __name__ == "__main__":
     test_captcha_prints_alert_and_clear()
     test_minimap_prints_detected_alert_and_clear()
+    test_player_alert_repeats_every_15_seconds_while_present()
     print("alert state print tests passed")

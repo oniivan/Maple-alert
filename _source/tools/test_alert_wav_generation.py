@@ -35,8 +35,10 @@ def test_volume_percent_changes_pcm_amplitude() -> None:
     normal_peak, _ = read_peak_and_duration(synthesize_alert_wav_bytes("captcha", 100))
     high_peak, _ = read_peak_and_duration(synthesize_alert_wav_bytes("captcha", 200))
     max_peak, _ = read_peak_and_duration(synthesize_alert_wav_bytes("captcha", 250))
+    boosted_peak, _ = read_peak_and_duration(synthesize_alert_wav_bytes("captcha", 300))
 
     assert low_peak < normal_peak < high_peak < max_peak
+    assert max_peak < boosted_peak
     assert high_peak == normal_peak * 2
 
 

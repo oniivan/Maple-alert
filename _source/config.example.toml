@@ -140,16 +140,18 @@ alert_settings_file = "runtime/alert_settings.json"
 captcha_repeat_seconds = 30
 # Minimap red: require continuous red presence before the first alert, then repeat while still present.
 minimap_required_seconds = 20
-minimap_repeat_seconds = 30
+minimap_repeat_seconds = 15
 detection_log_interval_seconds = 5
 # Prints a heartbeat even when nothing is detected, so the console does not look frozen.
 status_interval_seconds = 15
 
 [free_market_exit]
 enabled = true
-countdown_seconds = 15
+countdown_seconds = 10
+trigger_after_captcha_clear_seconds = 20
 reset_after_clear_seconds = 12
 failure_status_seconds = 20
+test_request_file = "runtime/free_market_exit_test.json"
 
 [telegram]
 # Keep private values out of the tracked config.toml when possible.

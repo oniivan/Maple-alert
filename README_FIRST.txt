@@ -17,7 +17,7 @@ of the overlay to quit the whole alert stack.
 
 The overlay has a TEST button plus separate LIE DETECT VOLUME and PLAYER
 DETECT VOLUME filled meters. Click TEST to play the lie alert first, then the
-player alert. Click/drag either meter to adjust that WAV volume up to 250%.
+player alert. Click/drag either meter to adjust that WAV volume up to 300%.
 Click DM on the top bar to add Discord or Telegram remote alert details and
 send a test message.
 If the top bar flashes yellow for system volume, Windows is muted or below 70%.
@@ -29,6 +29,8 @@ keeps checking and will switch when the window appears.
 If the top bar flashes red with MONITOR CRASHED or MONITOR DOWN, the monitor
 has been crashing repeatedly or has been unavailable long enough to matter.
 If the volume section turns red, the app's alert intensity is below 25%.
+Player alerts start after the configured persistence delay, then repeat about
+every 15 seconds while the marker remains present.
 
 Use `START_MAPLE_ALERT.bat` for normal monitoring. Running `MapleAlert.exe`
 directly is mainly for troubleshooting because the BAT file starts the
