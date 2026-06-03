@@ -28,6 +28,9 @@ def make_config(temp_dir: str) -> dict:
     config["discord"]["bot_token"] = "discord-secret-token"
     config["discord"]["user_id"] = "987654321"
     config["discord"]["webhook_url"] = "https://discord.com/api/webhooks/secret/webhook"
+    config["pushover"]["enabled"] = True
+    config["pushover"]["app_token"] = "pushover-secret-token"
+    config["pushover"]["user_key"] = "pushover-secret-user"
     return config
 
 
@@ -49,6 +52,11 @@ def test_redacted_config_removes_remote_alert_secrets() -> None:
                     "user_id": "runtime-user-id",
                     "webhook_url": "https://discord.com/api/webhooks/runtime/secret",
                 },
+                "pushover": {
+                    "enabled": True,
+                    "app_token": "runtime-pushover-token",
+                    "user_key": "runtime-pushover-user",
+                },
             },
         )
 
@@ -59,8 +67,12 @@ def test_redacted_config_removes_remote_alert_secrets() -> None:
         assert "discord-secret-token" not in payload
         assert "runtime-tg-token" not in payload
         assert "runtime-discord-token" not in payload
+        assert "runtime-pushover-token" not in payload
+        assert "runtime-pushover-user" not in payload
         assert "123456789" not in payload
         assert "987654321" not in payload
+        assert "pushover-secret-token" not in payload
+        assert "pushover-secret-user" not in payload
         assert "https://discord.com/api/webhooks" not in payload
         assert redacted["capture"]["window_title"] == "Maple"
         assert redacted["telegram"]["bot_token"] == "<set, redacted>"
@@ -86,8 +98,11 @@ def test_setup_check_report_shows_target_window_scale_and_volumes_without_secret
         assert "pixel_scale=1.0000" in report
         assert "Lie Detect Volume: 200%" in report
         assert "Player Detect Volume: 200%" in report
+        assert "Pushover configured=yes active=yes" in report
         assert "tg-secret-token" not in report
         assert "discord-secret-token" not in report
+        assert "pushover-secret-token" not in report
+        assert "pushover-secret-user" not in report
         assert "123456789" not in report
         assert "987654321" not in report
 

@@ -13,13 +13,13 @@ Use the overlay `TEST` button. It plays the lie alert first, then the player ale
 Check these in order:
 
 - Windows output is not muted.
-- Windows output volume is at least `70%`.
+- Windows output volume is at least `30%`.
 - `LIE DETECT VOLUME` and `PLAYER DETECT VOLUME` are not near `0%`.
 - The expected output device is selected in Windows.
 
 ## Low Volume Warning
 
-The overlay pulses yellow when Windows output is muted or below `70%`. `IGNORE` appears only while the warning is active. After ignoring, a flashing yellow `WARN` button remains until the volume is fixed.
+The overlay pulses yellow when Windows output is muted or below `30%`. `IGNORE` appears only while the warning is active. After ignoring, a flashing yellow `WARN` button remains until the volume is fixed. A warning prompt appears if system volume stays muted or below `30%` for 3 minutes.
 
 ## Overlay Still Visible After Exit
 
@@ -40,6 +40,8 @@ Click `DM` on the overlay and use the built-in test.
 Telegram needs a bot token and chat ID. The recipient must start the bot first.
 
 Discord DMs need a bot token and numeric user ID. Discord webhooks need a webhook URL.
+
+Pushover needs an app token and user key. Pushover alerts use emergency priority.
 
 Private values should go in `config.local.toml` or the overlay settings, not in committed docs.
 

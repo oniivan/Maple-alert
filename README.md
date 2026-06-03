@@ -18,7 +18,7 @@ Keep the black command window open while monitoring. Closing it stops the alert 
 - Watchdog crash/hang recovery
 - Free Market safeguard prompt after a possible missed lie detection
 - Setup check and redacted diagnostics bundle
-- Optional Discord DM/webhook and Telegram alerts
+- Optional Telegram, Discord, and Pushover alerts
 
 This detects visual events and alerts the user.
 
@@ -49,6 +49,8 @@ config check.
 
 ## Remote Alerts
 
-Click `DM` on the overlay to paste Telegram or Discord details and send a test.
-Discord DMs need a bot token plus numeric user ID. Telegram needs a bot token
-plus chat ID, and the user must start the bot first.
+Click `DM` on the overlay to paste Telegram, Discord, or Pushover details and
+send a test. Telegram needs a bot token plus chat ID, and the user must start
+the bot first. Discord DMs need a bot token plus numeric user ID; webhooks are
+also supported. Pushover needs an app token plus user key and uses emergency
+priority for alerts.

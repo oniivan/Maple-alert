@@ -18,11 +18,12 @@ of the overlay to quit the whole alert stack.
 The overlay has a TEST button plus separate LIE DETECT VOLUME and PLAYER
 DETECT VOLUME filled meters. Click TEST to play the lie alert first, then the
 player alert. Click/drag either meter to adjust that WAV volume up to 300%.
-Click DM on the top bar to add Discord or Telegram remote alert details and
+Click DM on the top bar to add Telegram, Discord, or Pushover remote alert details and
 send a test message.
-If the top bar flashes yellow for system volume, Windows is muted or below 70%.
+If the top bar flashes yellow for system volume, Windows is muted or below 30%.
 The IGNORE button appears only while that warning is active. Click it to suppress
 the current warning; a flashing WARN button remains while that warning is ignored.
+A warning prompt appears if system volume stays muted or below 30% for 3 minutes.
 If the top bar flashes red with MAPLE NOT DETECTED, the game window was
 not found and monitor fallback is active. Starting Maple later is okay; it
 keeps checking and will switch when the window appears.
@@ -38,7 +39,7 @@ crash/hang watchdog layers.
 
 Optional:
 
-  Edit config.toml to tune thresholds or add Discord/Telegram.
+  Edit config.toml to tune thresholds or add Telegram/Discord/Pushover.
   Put private tokens/IDs in config.local.toml instead of config.toml.
   Open _debug_tools\Setup Check.bat if you are unsure the right window/audio/settings are ready.
   Open _debug_tools\Create Diagnostics.bat to make a redacted support bundle.

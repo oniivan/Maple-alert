@@ -7,8 +7,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from maple_alert import (
+    SYSTEM_VOLUME_PROMPT_REPEAT_SECONDS,
+    SYSTEM_VOLUME_PROMPT_SECONDS,
     SYSTEM_VOLUME_WARNING_PERCENT,
     SystemVolumeState,
+    SystemVolumePromptTracker,
     read_alert_volume_percent,
     read_ignore_system_volume_warning,
     system_volume_button_state,
@@ -17,10 +20,11 @@ from maple_alert import (
 )
 
 
-def test_system_volume_warning_threshold_is_below_70_percent() -> None:
-    assert SYSTEM_VOLUME_WARNING_PERCENT == 70
-    assert SystemVolumeState(69, False).needs_attention
-    assert not SystemVolumeState(70, False).needs_attention
+def test_system_volume_warning_threshold_is_below_30_percent() -> None:
+    assert SYSTEM_VOLUME_WARNING_PERCENT == 30
+    assert SystemVolumeState(29, False).needs_attention
+    assert not SystemVolumeState(30, False).needs_attention
+    assert not SystemVolumeState(69, False).needs_attention
     assert not SystemVolumeState(89, False).needs_attention
 
 
@@ -58,9 +62,35 @@ def test_system_volume_button_only_shows_for_active_warning() -> None:
     assert warn_pulse["fill"] != warn_dim["fill"]
 
 
+def test_system_volume_prompt_waits_three_minutes_and_repeats_only_after_close() -> None:
+    assert SYSTEM_VOLUME_PROMPT_SECONDS == 180
+    assert SYSTEM_VOLUME_PROMPT_REPEAT_SECONDS == 180
+    tracker = SystemVolumePromptTracker(hold_seconds=180, repeat_seconds=180)
+
+    assert tracker.update(needs_attention=True, ignored=False, prompt_open=False, now=0) is False
+    assert tracker.update(needs_attention=True, ignored=False, prompt_open=False, now=179) is False
+    assert tracker.update(needs_attention=True, ignored=False, prompt_open=False, now=180) is True
+    assert tracker.update(needs_attention=True, ignored=False, prompt_open=True, now=181) is False
+    assert tracker.update(needs_attention=True, ignored=False, prompt_open=False, now=359) is False
+    assert tracker.update(needs_attention=True, ignored=False, prompt_open=False, now=360) is True
+
+
+def test_system_volume_prompt_resets_when_volume_recovers_or_is_ignored() -> None:
+    tracker = SystemVolumePromptTracker(hold_seconds=180, repeat_seconds=180)
+
+    assert tracker.update(needs_attention=True, ignored=False, prompt_open=False, now=0) is False
+    assert tracker.update(needs_attention=False, ignored=False, prompt_open=False, now=120) is False
+    assert tracker.update(needs_attention=True, ignored=False, prompt_open=False, now=200) is False
+    assert tracker.update(needs_attention=True, ignored=False, prompt_open=False, now=379) is False
+    assert tracker.update(needs_attention=True, ignored=False, prompt_open=False, now=380) is True
+    assert tracker.update(needs_attention=True, ignored=True, prompt_open=False, now=381) is False
+
+
 if __name__ == "__main__":
-    test_system_volume_warning_threshold_is_below_70_percent()
+    test_system_volume_warning_threshold_is_below_30_percent()
     test_muted_system_volume_always_needs_attention()
     test_ignoring_system_volume_warning_preserves_alert_volume()
     test_system_volume_button_only_shows_for_active_warning()
+    test_system_volume_prompt_waits_three_minutes_and_repeats_only_after_close()
+    test_system_volume_prompt_resets_when_volume_recovers_or_is_ignored()
     print("system volume warning tests passed")

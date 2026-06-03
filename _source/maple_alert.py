@@ -45,7 +45,9 @@ from vision_core import (
 APP_NAME = "Maple Alert"
 APP_VERSION = "0.4.0"
 RELEASE_MANIFEST_NAME = "release_manifest.json"
-SYSTEM_VOLUME_WARNING_PERCENT = 70
+SYSTEM_VOLUME_WARNING_PERCENT = 30
+SYSTEM_VOLUME_PROMPT_SECONDS = 180
+SYSTEM_VOLUME_PROMPT_REPEAT_SECONDS = 180
 OVERLAY_WIDTH = 340
 OVERLAY_HEALTH_HEIGHT = 34
 OVERLAY_FULL_HEIGHT = 92
@@ -64,6 +66,7 @@ SENSITIVE_KEY_FRAGMENTS = (
     "webhook",
     "chat_id",
     "user_id",
+    "user_key",
     "authorization",
 )
 REDACTED_VALUE = "<set, redacted>"
@@ -218,9 +221,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "user_id": "",
         "webhook_url": "",
     },
+    "pushover": {
+        "enabled": False,
+        "app_token": "",
+        "user_key": "",
+        "priority": 2,
+        "retry_seconds": 30,
+        "expire_seconds": 3600,
+    },
     "notifications": {
         "settings_file": "runtime/notification_settings.json",
-        "remote_enabled": False,
     },
     "watchdog": {
         "heartbeat_file": "runtime/heartbeat.json",
@@ -435,6 +445,48 @@ class SystemVolumeState:
         return False
 
 
+class SystemVolumePromptTracker:
+    def __init__(
+        self,
+        *,
+        hold_seconds: float = SYSTEM_VOLUME_PROMPT_SECONDS,
+        repeat_seconds: float = SYSTEM_VOLUME_PROMPT_REPEAT_SECONDS,
+    ) -> None:
+        self.hold_seconds = max(1.0, float(hold_seconds))
+        self.repeat_seconds = max(1.0, float(repeat_seconds))
+        self.bad_since: float | None = None
+        self.next_prompt_at: float | None = None
+
+    def reset(self) -> None:
+        self.bad_since = None
+        self.next_prompt_at = None
+
+    def update(
+        self,
+        *,
+        needs_attention: bool,
+        ignored: bool,
+        prompt_open: bool,
+        now: float,
+    ) -> bool:
+        if ignored or not needs_attention:
+            self.reset()
+            return False
+
+        timestamp = float(now)
+        if self.bad_since is None:
+            self.bad_since = timestamp
+        if timestamp - self.bad_since < self.hold_seconds:
+            return False
+        if prompt_open:
+            return False
+        if self.next_prompt_at is not None and timestamp < self.next_prompt_at:
+            return False
+
+        self.next_prompt_at = timestamp + self.repeat_seconds
+        return True
+
+
 @dataclass(frozen=True)
 class WindowInfo:
     title: str
@@ -646,6 +698,12 @@ def load_config(path: Path) -> dict[str, Any]:
         config["discord"]["user_id"] = discord_user_id
     if discord_webhook_url:
         config["discord"]["webhook_url"] = discord_webhook_url
+    pushover_app_token = os.getenv("PUSHOVER_APP_TOKEN")
+    pushover_user_key = os.getenv("PUSHOVER_USER_KEY")
+    if pushover_app_token:
+        config["pushover"]["app_token"] = pushover_app_token
+    if pushover_user_key:
+        config["pushover"]["user_key"] = pushover_user_key
 
     config["_config_dir"] = str(path.resolve().parent)
     config["_loaded_config_files"] = loaded_files
@@ -657,6 +715,52 @@ def resolve_config_path(config: dict[str, Any], value: str) -> Path:
     if not path.is_absolute():
         path = Path(config["_config_dir"]) / path
     return path
+
+
+def atomic_write_text(
+    path: Path,
+    text: str,
+    *,
+    encoding: str = "utf-8",
+    attempts: int = 5,
+    retry_delay_seconds: float = 0.05,
+    required: bool = True,
+) -> bool:
+    attempts = max(1, int(attempts))
+    last_error: OSError | None = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        if required:
+            raise
+        logging.getLogger("maple_alert").warning("Could not create %s: %s", path.parent, exc)
+        return False
+
+    for attempt in range(attempts):
+        temp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
+        try:
+            temp_path.write_text(text, encoding=encoding)
+            temp_path.replace(path)
+            return True
+        except OSError as exc:
+            last_error = exc
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if attempt + 1 < attempts:
+                time.sleep(max(0.0, retry_delay_seconds))
+
+    if required and last_error is not None:
+        raise last_error
+    if last_error is not None:
+        logging.getLogger("maple_alert").warning(
+            "Could not update %s after %s attempts: %s",
+            path,
+            attempts,
+            last_error,
+        )
+    return False
 
 
 def quit_signal_path(config: dict[str, Any]) -> Path:
@@ -675,9 +779,7 @@ def request_quit(config: dict[str, Any], source: str) -> Path:
         "pid": os.getpid(),
         "source": source,
     }
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-    temp_path.replace(path)
+    atomic_write_text(path, json.dumps(payload, sort_keys=True))
     return path
 
 
@@ -697,9 +799,7 @@ def request_free_market_exit_test(config: dict[str, Any], source: str) -> Path:
         "pid": os.getpid(),
         "source": source,
     }
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-    temp_path.replace(path)
+    atomic_write_text(path, json.dumps(payload, sort_keys=True))
     return path
 
 
@@ -744,9 +844,7 @@ def write_alert_settings_payload(config: dict[str, Any], payload: dict[str, Any]
     updated_payload = dict(payload)
     updated_payload["updated_at"] = datetime.now().isoformat(timespec="seconds")
     updated_payload["pid"] = os.getpid()
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(updated_payload, sort_keys=True), encoding="utf-8")
-    temp_path.replace(path)
+    atomic_write_text(path, json.dumps(updated_payload, sort_keys=True), required=True)
 
 
 def clamp_alert_volume_percent(value: Any, fallback: int = 200) -> int:
@@ -845,39 +943,45 @@ def notification_value(config: dict[str, Any], service: str, key: str) -> str:
     return str(config.get(service, {}).get(key, "")).strip()
 
 
+def notification_service_requested(config: dict[str, Any], service: str) -> bool:
+    runtime_settings = _runtime_service_settings(config, service)
+    if "enabled" in runtime_settings:
+        return bool(runtime_settings.get("enabled"))
+
+    service_cfg = config.get(service, {})
+    if "enabled" in service_cfg:
+        return bool(service_cfg.get("enabled"))
+
+    if service == "telegram" and not bool(config.get("alerts", {}).get("safe_mode", True)):
+        return bool(config.get("alerts", {}).get("telegram_enabled", False))
+    return False
+
+
 def remote_notifications_enabled(config: dict[str, Any]) -> bool:
-    settings = read_notification_settings(config)
-    if "remote_enabled" in settings:
-        return bool(settings.get("remote_enabled"))
-    notifications_cfg = config.get("notifications", {})
-    return bool(notifications_cfg.get("remote_enabled", False)) or not bool(
-        config.get("alerts", {}).get("safe_mode", True)
+    return any(
+        notification_service_requested(config, service)
+        for service in ("telegram", "discord", "pushover")
     )
 
 
 def notification_service_enabled(config: dict[str, Any], service: str) -> bool:
-    if not remote_notifications_enabled(config):
-        return False
-    runtime_settings = _runtime_service_settings(config, service)
-    service_cfg = config.get(service, {})
     if service == "telegram":
-        if "enabled" in runtime_settings:
-            enabled = bool(runtime_settings.get("enabled"))
-        else:
-            enabled = bool(
-                service_cfg.get("enabled", False)
-                or config.get("alerts", {}).get("telegram_enabled", False)
-            )
+        enabled = notification_service_requested(config, "telegram")
         return enabled and bool(notification_value(config, "telegram", "bot_token")) and bool(
             notification_value(config, "telegram", "chat_id")
         )
     if service == "discord":
-        enabled = bool(runtime_settings.get("enabled", service_cfg.get("enabled", False)))
+        enabled = notification_service_requested(config, "discord")
         has_webhook = bool(notification_value(config, "discord", "webhook_url"))
         has_dm = bool(notification_value(config, "discord", "bot_token")) and bool(
             notification_value(config, "discord", "user_id")
         )
         return enabled and (has_webhook or has_dm)
+    if service == "pushover":
+        enabled = notification_service_requested(config, "pushover")
+        return enabled and bool(notification_value(config, "pushover", "app_token")) and bool(
+            notification_value(config, "pushover", "user_key")
+        )
     return False
 
 
@@ -965,9 +1069,72 @@ def send_discord_notification(
         return False
 
 
-def send_remote_notifications(config: dict[str, Any], logger: logging.Logger, message: str) -> None:
-    send_telegram_notification(config, logger, message)
-    send_discord_notification(config, logger, message)
+def send_pushover_notification(
+    config: dict[str, Any],
+    logger: logging.Logger,
+    message: str,
+    post_func: Any | None = None,
+) -> bool:
+    if not notification_service_enabled(config, "pushover"):
+        logger.info("Pushover skipped because notifications are disabled or app token/user key are not configured")
+        return False
+
+    pushover_cfg = config.get("pushover", {})
+    token = notification_value(config, "pushover", "app_token")
+    user_key = notification_value(config, "pushover", "user_key")
+    try:
+        priority = int(pushover_cfg.get("priority", 2))
+    except (TypeError, ValueError):
+        priority = 2
+    priority = 2 if priority != 2 else priority
+    try:
+        retry_seconds = max(30, int(pushover_cfg.get("retry_seconds", 30)))
+    except (TypeError, ValueError):
+        retry_seconds = 30
+    try:
+        expire_seconds = max(retry_seconds, int(pushover_cfg.get("expire_seconds", 3600)))
+    except (TypeError, ValueError):
+        expire_seconds = 3600
+
+    payload: dict[str, Any] = {
+        "token": token,
+        "user": user_key,
+        "message": message,
+        "title": APP_NAME,
+        "priority": priority,
+    }
+    if priority == 2:
+        payload["retry"] = retry_seconds
+        payload["expire"] = expire_seconds
+
+    try:
+        if post_func is None:
+            import requests
+
+            post_func = requests.post
+
+        response = post_func(
+            "https://api.pushover.net/1/messages.json",
+            data=payload,
+            timeout=8,
+        )
+        response.raise_for_status()
+        logger.info("Pushover message sent")
+        return True
+    except Exception as exc:
+        logger.warning("Pushover send failed: %s", exc)
+        return False
+
+
+def send_remote_notifications(
+    config: dict[str, Any],
+    logger: logging.Logger,
+    message: str,
+    post_func: Any | None = None,
+) -> None:
+    send_telegram_notification(config, logger, message, post_func=post_func)
+    send_discord_notification(config, logger, message, post_func=post_func)
+    send_pushover_notification(config, logger, message, post_func=post_func)
 
 
 def setup_logging(config: dict[str, Any]) -> logging.Logger:
@@ -2589,6 +2756,8 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
     discord_token = bool(notification_value(config, "discord", "bot_token"))
     discord_user = bool(notification_value(config, "discord", "user_id"))
     discord_webhook = bool(notification_value(config, "discord", "webhook_url"))
+    pushover_token = bool(notification_value(config, "pushover", "app_token"))
+    pushover_user_key = bool(notification_value(config, "pushover", "user_key"))
 
     if telegram_token != telegram_chat:
         issues.append(
@@ -2608,15 +2777,26 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
                 "Discord DM needs both bot_token and user_id, or a webhook_url.",
             )
         )
+    if pushover_token != pushover_user_key:
+        issues.append(
+            config_issue(
+                "warning",
+                "pushover_incomplete",
+                "pushover",
+                "Pushover needs both app_token and user_key to send alerts.",
+            )
+        )
     if bool(notifications["remote_enabled"]) and not (
-        bool(notifications["telegram_configured"]) or bool(notifications["discord_configured"])
+        bool(notifications["telegram_configured"])
+        or bool(notifications["discord_configured"])
+        or bool(notifications["pushover_configured"])
     ):
         issues.append(
             config_issue(
                 "warning",
                 "remote_alerts_no_service",
-                "notifications.remote_enabled",
-                "Remote alerts are enabled but no complete Telegram or Discord destination is configured.",
+                "notifications",
+                "Remote alerts are enabled but no complete Telegram, Discord, or Pushover destination is configured.",
             )
         )
     if not bool(alerts_cfg.get("safe_mode", True)) and not bool(notifications["remote_enabled"]):
@@ -2625,7 +2805,7 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
                 "warning",
                 "legacy_remote_mode",
                 "alerts.safe_mode",
-                "safe_mode is false; prefer notifications.remote_enabled plus runtime DM settings for private credentials.",
+                "safe_mode is false; prefer enabling a specific Telegram, Discord, or Pushover service in runtime DM settings.",
             )
         )
 
@@ -2700,14 +2880,22 @@ def notification_readiness_summary(config: dict[str, Any]) -> dict[str, Any]:
         notification_value(config, "discord", "user_id")
     )
     discord_webhook_configured = bool(notification_value(config, "discord", "webhook_url"))
+    pushover_configured = bool(notification_value(config, "pushover", "app_token")) and bool(
+        notification_value(config, "pushover", "user_key")
+    )
     return {
         "remote_enabled": remote_notifications_enabled(config),
         "telegram_configured": telegram_configured,
+        "telegram_requested": notification_service_requested(config, "telegram"),
         "telegram_enabled": notification_service_enabled(config, "telegram"),
         "discord_configured": discord_dm_configured or discord_webhook_configured,
         "discord_dm_configured": discord_dm_configured,
         "discord_webhook_configured": discord_webhook_configured,
+        "discord_requested": notification_service_requested(config, "discord"),
         "discord_enabled": notification_service_enabled(config, "discord"),
+        "pushover_configured": pushover_configured,
+        "pushover_requested": notification_service_requested(config, "pushover"),
+        "pushover_enabled": notification_service_enabled(config, "pushover"),
     }
 
 
@@ -2812,7 +3000,9 @@ def build_setup_check_report(
             f"Telegram configured={format_yes_no(bool(notifications['telegram_configured']))} "
             f"active={format_yes_no(bool(notifications['telegram_enabled']))}; "
             f"Discord configured={format_yes_no(bool(notifications['discord_configured']))} "
-            f"active={format_yes_no(bool(notifications['discord_enabled']))}"
+            f"active={format_yes_no(bool(notifications['discord_enabled']))}; "
+            f"Pushover configured={format_yes_no(bool(notifications['pushover_configured']))} "
+            f"active={format_yes_no(bool(notifications['pushover_enabled']))}"
         )
     )
     lines.append("Mode: visual detection and local/remote alerts.")
@@ -3178,7 +3368,6 @@ def write_heartbeat(
     target: WindowInfo | None = None,
 ) -> None:
     path = resolve_config_path(config, config["watchdog"]["heartbeat_file"])
-    path.parent.mkdir(parents=True, exist_ok=True)
     target_window = bool(config["capture"].get("target_window", False))
     payload = {
         "time": datetime.now().isoformat(timespec="seconds"),
@@ -3203,9 +3392,7 @@ def write_heartbeat(
             "active_alert": None,
         },
     }
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-    temp_path.replace(path)
+    atomic_write_text(path, json.dumps(payload, sort_keys=True), required=False)
 
 
 def write_watchdog_heartbeat(
@@ -3219,7 +3406,6 @@ def write_watchdog_heartbeat(
         config,
         config["watchdog"].get("watchdog_heartbeat_file", "runtime/watchdog_heartbeat.json"),
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "time": datetime.now().isoformat(timespec="seconds"),
         "epoch_seconds": time.time(),
@@ -3230,9 +3416,7 @@ def write_watchdog_heartbeat(
     }
     if monitor_health is not None:
         payload["monitor_health"] = monitor_health
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-    temp_path.replace(path)
+    atomic_write_text(path, json.dumps(payload, sort_keys=True), required=False)
 
 
 def play_watchdog_sound(config: dict[str, Any] | None = None) -> None:
@@ -3666,6 +3850,8 @@ def run_overlay(config: dict[str, Any]) -> int:
         "minimized": False,
         "current_height": full_height,
         "notification_dialog": None,
+        "system_volume_prompt_dialog": None,
+        "system_volume_prompt_tracker": SystemVolumePromptTracker(),
     }
     drawer_items = [
         volume_warning_bg,
@@ -3828,6 +4014,119 @@ def run_overlay(config: dict[str, Any]) -> int:
             return str(service_settings.get(key, ""))
         return str(config.get(service, {}).get(key, ""))
 
+    def system_volume_prompt_open() -> bool:
+        dialog = state.get("system_volume_prompt_dialog")
+        try:
+            return bool(dialog is not None and dialog.winfo_exists())
+        except Exception:
+            return False
+
+    def close_system_volume_prompt() -> None:
+        dialog = state.get("system_volume_prompt_dialog")
+        state["system_volume_prompt_dialog"] = None
+        try:
+            if dialog is not None and dialog.winfo_exists():
+                dialog.destroy()
+        except Exception:
+            pass
+
+    def open_system_volume_warning_prompt(volume_state: SystemVolumeState) -> None:
+        existing = state.get("system_volume_prompt_dialog")
+        try:
+            if existing is not None and existing.winfo_exists():
+                existing.lift()
+                return
+        except Exception:
+            pass
+
+        dialog = tk.Toplevel(root)
+        state["system_volume_prompt_dialog"] = dialog
+        dialog.configure(bg="#111418")
+        dialog.overrideredirect(True)
+        dialog.attributes("-topmost", True)
+        dialog.attributes("-alpha", opacity)
+        dialog.resizable(False, False)
+        dialog.bind("<Escape>", lambda _event: "break")
+        dialog.bind("<Return>", lambda _event: "break")
+
+        width = 520
+        height = 178
+        screen_w = root.winfo_screenwidth()
+        screen_h = root.winfo_screenheight()
+        dialog.geometry(f"{width}x{height}+{(screen_w - width) // 2}+{(screen_h - height) // 2}")
+
+        canvas_prompt = tk.Canvas(dialog, width=width, height=height, bg="#111418", highlightthickness=0)
+        canvas_prompt.pack(fill="both", expand=True)
+        canvas_prompt.create_rectangle(0, 0, width - 1, height - 1, fill="#111418", outline="#2b323b")
+        canvas_prompt.create_rectangle(0, 0, width - 1, 28, fill="#111418", outline="#2b323b")
+        canvas_prompt.create_oval(10, 9, 22, 21, fill="#ffd43b", outline="")
+        canvas_prompt.create_text(
+            32,
+            15,
+            anchor="w",
+            fill="#fff2b0",
+            font=("Consolas", 10, "bold"),
+            text="SYSTEM VOLUME WARNING",
+        )
+        close_box = canvas_prompt.create_rectangle(width - 36, 5, width - 10, 23, fill="#1b2430", outline="#3b4654")
+        close_text = canvas_prompt.create_text(
+            width - 23,
+            14,
+            anchor="center",
+            fill="#d7fbe1",
+            font=("Consolas", 9, "bold"),
+            text="X",
+        )
+        if volume_state.muted is True:
+            detail = "System volume is muted."
+        elif volume_state.percent is not None:
+            detail = f"System volume is {volume_state.percent}%, below {SYSTEM_VOLUME_WARNING_PERCENT}%."
+        else:
+            detail = "System volume status could not be read."
+        canvas_prompt.create_rectangle(8, 36, width - 9, height - 9, fill="#151a20", outline="#7a6218")
+        canvas_prompt.create_text(
+            width // 2,
+            82,
+            anchor="center",
+            fill="#fff2b0",
+            font=("Consolas", 11, "bold"),
+            justify="center",
+            text=(
+                f"{detail}\n"
+                "Press IGNORE in the main window\n"
+                "to suppress future warnings."
+            ),
+        )
+        button = canvas_prompt.create_rectangle(218, 128, 302, 154, fill="#1b2430", outline="#3b4654")
+        button_label = canvas_prompt.create_text(
+            260,
+            141,
+            anchor="center",
+            fill="#d7fbe1",
+            font=("Consolas", 9, "bold"),
+            text="CLOSE",
+        )
+
+        prompt_drag = {"x": 0, "y": 0}
+
+        def start_prompt_drag(event: Any) -> None:
+            prompt_drag["x"] = int(event.x_root) - dialog.winfo_x()
+            prompt_drag["y"] = int(event.y_root) - dialog.winfo_y()
+
+        def move_prompt(event: Any) -> None:
+            x = int(event.x_root) - int(prompt_drag["x"])
+            y = int(event.y_root) - int(prompt_drag["y"])
+            dialog.geometry(f"+{x}+{y}")
+
+        def close_prompt_event(_: Any | None = None) -> None:
+            close_system_volume_prompt()
+
+        for item in (close_box, close_text, button, button_label):
+            canvas_prompt.tag_bind(item, "<Button-1>", close_prompt_event)
+        canvas_prompt.bind("<ButtonPress-1>", start_prompt_drag)
+        canvas_prompt.bind("<B1-Motion>", move_prompt)
+        dialog.protocol("WM_DELETE_WINDOW", close_system_volume_prompt)
+
     def open_notification_settings_dialog() -> None:
         existing = state.get("notification_dialog")
         try:
@@ -3878,7 +4177,8 @@ def run_overlay(config: dict[str, Any]) -> int:
         body = tk.Frame(chrome, bg="#111418")
         body.grid(row=1, column=0, sticky="nsew")
         chrome.grid_columnconfigure(0, weight=1)
-        body.grid_columnconfigure(1, weight=1)
+        for column in range(3):
+            body.grid_columnconfigure(column, weight=1)
 
         dialog_drag = {"x": 0, "y": 0}
 
@@ -3901,84 +4201,69 @@ def run_overlay(config: dict[str, Any]) -> int:
         close_label.bind("<Button-1>", lambda _event: close_dialog())
         dialog.protocol("WM_DELETE_WINDOW", close_dialog)
 
-        remote_var = tk.BooleanVar(value=remote_notifications_enabled(config))
         telegram_settings = settings.get("telegram", {})
         discord_settings = settings.get("discord", {})
+        pushover_settings = settings.get("pushover", {})
         telegram_enabled_var = tk.BooleanVar(
-            value=bool(
-                telegram_settings.get(
-                    "enabled",
-                    config.get("alerts", {}).get("telegram_enabled", False),
-                )
-            )
+            value=bool(telegram_settings.get("enabled", config.get("telegram", {}).get("enabled", False)))
         )
         discord_enabled_var = tk.BooleanVar(
             value=bool(discord_settings.get("enabled", config.get("discord", {}).get("enabled", False)))
         )
+        pushover_enabled_var = tk.BooleanVar(
+            value=bool(pushover_settings.get("enabled", config.get("pushover", {}).get("enabled", False)))
+        )
         entries: dict[str, tk.Entry] = {}
 
-        def add_label(text: str, row: int, column: int = 0, columnspan: int = 1) -> None:
+        def add_service_frame(title: str, variable: Any, column: int) -> Any:
+            frame = tk.Frame(body, bg="#111418", highlightbackground="#2b323b", highlightthickness=1)
+            frame.grid(row=0, column=column, sticky="nsew", padx=(10 if column == 0 else 4, 10 if column == 2 else 4), pady=(10, 2))
+            frame.grid_columnconfigure(0, weight=1)
+            tk.Checkbutton(
+                frame,
+                text=title,
+                variable=variable,
+                bg="#111418",
+                fg="#aab4c0",
+                activebackground="#111418",
+                activeforeground="#d7fbe1",
+                selectcolor="#17221b",
+                font=("Consolas", 9, "bold"),
+            ).grid(row=0, column=0, sticky="w", padx=8, pady=(6, 2))
+            return frame
+
+        def add_label(parent: Any, text: str, row: int) -> None:
             tk.Label(
-                body,
+                parent,
                 text=text,
                 bg="#111418",
                 fg="#d7fbe1",
-                font=("Consolas", 9, "bold"),
-            ).grid(row=row, column=column, columnspan=columnspan, sticky="w", padx=10, pady=(8, 2))
+                font=("Consolas", 8, "bold"),
+            ).grid(row=row, column=0, sticky="w", padx=8, pady=(5, 1))
 
-        def add_entry(service: str, key: str, row: int, label_text: str, show: str = "") -> None:
-            add_label(label_text, row)
+        def add_entry(parent: Any, service: str, key: str, row: int, label_text: str, show: str = "") -> None:
+            add_label(parent, label_text, row)
             entry = tk.Entry(
-                body,
-                width=38,
+                parent,
+                width=24,
                 show=show,
-                font=("Consolas", 9),
+                font=("Consolas", 8),
                 **notification_entry_style(),
             )
             entry.insert(0, notification_entry_value(settings, service, key))
-            entry.grid(row=row, column=1, padx=10, pady=(8, 2))
+            entry.grid(row=row + 1, column=0, sticky="ew", padx=8, pady=(0, 4))
             entries[f"{service}.{key}"] = entry
 
-        tk.Checkbutton(
-            body,
-            text="ENABLE REMOTE ALERTS",
-            variable=remote_var,
-            bg="#111418",
-            fg="#fff2b0",
-            activebackground="#111418",
-            activeforeground="#fff2b0",
-            selectcolor="#332b0e",
-            font=("Consolas", 9, "bold"),
-        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 2))
-
-        tk.Checkbutton(
-            body,
-            text="TELEGRAM",
-            variable=telegram_enabled_var,
-            bg="#111418",
-            fg="#aab4c0",
-            activebackground="#111418",
-            activeforeground="#d7fbe1",
-            selectcolor="#17221b",
-            font=("Consolas", 9, "bold"),
-        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=10, pady=(6, 0))
-        add_entry("telegram", "bot_token", 2, "Bot token", "*")
-        add_entry("telegram", "chat_id", 3, "Chat ID")
-
-        tk.Checkbutton(
-            body,
-            text="DISCORD",
-            variable=discord_enabled_var,
-            bg="#111418",
-            fg="#aab4c0",
-            activebackground="#111418",
-            activeforeground="#d7fbe1",
-            selectcolor="#17221b",
-            font=("Consolas", 9, "bold"),
-        ).grid(row=4, column=0, columnspan=2, sticky="w", padx=10, pady=(8, 0))
-        add_entry("discord", "bot_token", 5, "Bot token", "*")
-        add_entry("discord", "user_id", 6, "User ID")
-        add_entry("discord", "webhook_url", 7, "Webhook URL")
+        telegram_frame = add_service_frame("TELEGRAM", telegram_enabled_var, 0)
+        discord_frame = add_service_frame("DISCORD", discord_enabled_var, 1)
+        pushover_frame = add_service_frame("PUSHOVER", pushover_enabled_var, 2)
+        add_entry(telegram_frame, "telegram", "bot_token", 1, "Bot token", "*")
+        add_entry(telegram_frame, "telegram", "chat_id", 3, "Chat ID")
+        add_entry(discord_frame, "discord", "bot_token", 1, "Bot token", "*")
+        add_entry(discord_frame, "discord", "user_id", 3, "User ID")
+        add_entry(discord_frame, "discord", "webhook_url", 5, "Webhook URL")
+        add_entry(pushover_frame, "pushover", "app_token", 1, "App token", "*")
+        add_entry(pushover_frame, "pushover", "user_key", 3, "User key", "*")
 
         status_var = tk.StringVar(value="")
         status_label = tk.Label(
@@ -3988,11 +4273,10 @@ def run_overlay(config: dict[str, Any]) -> int:
             fg="#aab4c0",
             font=("Consolas", 8, "bold"),
         )
-        status_label.grid(row=8, column=0, columnspan=2, sticky="w", padx=10, pady=(8, 0))
+        status_label.grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=(8, 0))
 
         def collect_payload() -> dict[str, Any]:
             return {
-                "remote_enabled": bool(remote_var.get()),
                 "telegram": {
                     "enabled": bool(telegram_enabled_var.get()),
                     "bot_token": entries["telegram.bot_token"].get().strip(),
@@ -4003,6 +4287,11 @@ def run_overlay(config: dict[str, Any]) -> int:
                     "bot_token": entries["discord.bot_token"].get().strip(),
                     "user_id": entries["discord.user_id"].get().strip(),
                     "webhook_url": entries["discord.webhook_url"].get().strip(),
+                },
+                "pushover": {
+                    "enabled": bool(pushover_enabled_var.get()),
+                    "app_token": entries["pushover.app_token"].get().strip(),
+                    "user_key": entries["pushover.user_key"].get().strip(),
                 },
             }
 
@@ -4027,7 +4316,12 @@ def run_overlay(config: dict[str, Any]) -> int:
                     logger,
                     f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Maple Alert test: Discord notifications are configured.",
                 )
-                result = "Test sent" if (sent_telegram or sent_discord) else "Nothing sent; check IDs/tokens"
+                sent_pushover = send_pushover_notification(
+                    config,
+                    logger,
+                    f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Maple Alert test: Pushover notifications are configured.",
+                )
+                result = "Test sent" if (sent_telegram or sent_discord or sent_pushover) else "Nothing sent; check IDs/tokens"
                 try:
                     dialog.after(0, lambda: status_var.set(result))
                 except Exception:
@@ -4036,15 +4330,20 @@ def run_overlay(config: dict[str, Any]) -> int:
             threading.Thread(target=worker, daemon=True).start()
 
         button_frame = tk.Frame(body, bg="#111418")
-        button_frame.grid(row=9, column=0, columnspan=2, sticky="e", padx=10, pady=10)
-        for text, command in (("SAVE", save_settings), ("TEST", test_settings), ("CLOSE", close_dialog)):
+        button_frame.grid(row=2, column=0, columnspan=3, sticky="e", padx=10, pady=10)
+        button_specs = (
+            ("SAVE", save_settings, "#12371f", "#1f5b31", "#d7fbe1"),
+            ("TEST DMS", test_settings, "#4a370b", "#6a520f", "#fff2b0"),
+            ("CLOSE", close_dialog, "#1b2430", "#243244", "#d7fbe1"),
+        )
+        for text, command, bg, active_bg, fg in button_specs:
             tk.Button(
                 button_frame,
                 text=text,
                 command=command,
-                bg="#1b2430",
-                fg="#d7fbe1",
-                activebackground="#243244",
+                bg=bg,
+                fg=fg,
+                activebackground=active_bg,
                 activeforeground="#ffffff",
                 relief="flat",
                 font=("Consolas", 8, "bold"),
@@ -4055,6 +4354,8 @@ def run_overlay(config: dict[str, Any]) -> int:
         ignored = not bool(state.get("ignore_system_volume_warning", False))
         state["ignore_system_volume_warning"] = ignored
         write_ignore_system_volume_warning(config, ignored)
+        if ignored:
+            close_system_volume_prompt()
         draw_system_volume_button()
 
     def update_alert_volume_from_x(x: int, kind: str) -> None:
@@ -4317,6 +4618,21 @@ def run_overlay(config: dict[str, Any]) -> int:
             system_volume_needs_attention
             and not system_volume_ignored
         )
+        prompt_tracker = state.get("system_volume_prompt_tracker")
+        if not isinstance(prompt_tracker, SystemVolumePromptTracker):
+            prompt_tracker = SystemVolumePromptTracker()
+            state["system_volume_prompt_tracker"] = prompt_tracker
+        if system_volume_ignored:
+            close_system_volume_prompt()
+        elif not system_volume_needs_attention:
+            close_system_volume_prompt()
+        elif prompt_tracker.update(
+            needs_attention=bool(system_volume_needs_attention),
+            ignored=bool(system_volume_ignored),
+            prompt_open=system_volume_prompt_open(),
+            now=time.monotonic(),
+        ):
+            open_system_volume_warning_prompt(system_volume)
 
         pulse_on = frame["i"] % 4 in (0, 1)
         if watchdog_health_active:

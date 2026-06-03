@@ -8,8 +8,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from maple_alert import (
     notification_service_enabled,
+    notification_readiness_summary,
     read_notification_settings,
     send_discord_notification,
+    send_pushover_notification,
+    send_remote_notifications,
     send_telegram_notification,
     write_notification_settings,
 )
@@ -58,28 +61,55 @@ def make_config(temp_dir: str) -> dict:
             "user_id": "",
             "webhook_url": "",
         },
+        "pushover": {
+            "enabled": False,
+            "app_token": "",
+            "user_key": "",
+            "priority": 2,
+            "retry_seconds": 30,
+            "expire_seconds": 3600,
+        },
     }
 
 
-def test_notification_settings_are_persisted_and_enable_safe_mode_override() -> None:
+def test_notification_settings_are_persisted_and_service_checkbox_enables_remote_alerts() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         config = make_config(temp_dir)
 
         write_notification_settings(
             config,
             {
-                "remote_enabled": True,
                 "telegram": {"enabled": True, "bot_token": "tg-token", "chat_id": "12345"},
                 "discord": {"enabled": True, "bot_token": "dc-token", "user_id": "98765"},
             },
         )
 
         settings = read_notification_settings(config)
-        assert settings["remote_enabled"] is True
         assert settings["telegram"]["chat_id"] == "12345"
         assert settings["discord"]["user_id"] == "98765"
+        assert notification_readiness_summary(config)["remote_enabled"] is True
         assert notification_service_enabled(config, "telegram") is True
         assert notification_service_enabled(config, "discord") is True
+
+
+def test_remote_alerts_are_disabled_when_no_service_checkbox_is_enabled() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config = make_config(temp_dir)
+        write_notification_settings(
+            config,
+            {
+                "telegram": {"enabled": False, "bot_token": "tg-token", "chat_id": "12345"},
+                "discord": {"enabled": False, "bot_token": "dc-token", "user_id": "98765"},
+                "pushover": {"enabled": False, "app_token": "po-token", "user_key": "po-user"},
+            },
+        )
+
+        readiness = notification_readiness_summary(config)
+
+        assert readiness["remote_enabled"] is False
+        assert notification_service_enabled(config, "telegram") is False
+        assert notification_service_enabled(config, "discord") is False
+        assert notification_service_enabled(config, "pushover") is False
 
 
 def test_telegram_notification_uses_runtime_settings() -> None:
@@ -88,7 +118,6 @@ def test_telegram_notification_uses_runtime_settings() -> None:
         write_notification_settings(
             config,
             {
-                "remote_enabled": True,
                 "telegram": {"enabled": True, "bot_token": "tg-token", "chat_id": "12345"},
             },
         )
@@ -109,7 +138,6 @@ def test_runtime_service_disable_overrides_legacy_telegram_enabled() -> None:
         write_notification_settings(
             config,
             {
-                "remote_enabled": True,
                 "telegram": {"enabled": False, "bot_token": "tg-token", "chat_id": "12345"},
             },
         )
@@ -133,7 +161,6 @@ def test_discord_dm_notification_uses_user_id_runtime_settings() -> None:
         write_notification_settings(
             config,
             {
-                "remote_enabled": True,
                 "discord": {"enabled": True, "bot_token": "dc-token", "user_id": "98765"},
             },
         )
@@ -152,10 +179,63 @@ def test_discord_dm_notification_uses_user_id_runtime_settings() -> None:
         assert calls[1]["json"] == {"content": "hello"}
 
 
+def test_pushover_notification_uses_emergency_priority_payload() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config = make_config(temp_dir)
+        write_notification_settings(
+            config,
+            {
+                "pushover": {"enabled": True, "app_token": "po-token", "user_key": "po-user"},
+            },
+        )
+        calls: list[dict] = []
+
+        def fake_post(url: str, **kwargs: object) -> FakeResponse:
+            calls.append({"url": url, **kwargs})
+            return FakeResponse()
+
+        assert send_pushover_notification(config, FakeLogger(), "hello", post_func=fake_post) is True
+        assert calls[0]["url"] == "https://api.pushover.net/1/messages.json"
+        assert calls[0]["data"] == {
+            "token": "po-token",
+            "user": "po-user",
+            "message": "hello",
+            "title": "Maple Alert",
+            "priority": 2,
+            "retry": 30,
+            "expire": 3600,
+        }
+
+
+def test_send_remote_notifications_includes_pushover() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config = make_config(temp_dir)
+        write_notification_settings(
+            config,
+            {
+                "telegram": {"enabled": False, "bot_token": "tg-token", "chat_id": "12345"},
+                "discord": {"enabled": False, "bot_token": "dc-token", "user_id": "98765"},
+                "pushover": {"enabled": True, "app_token": "po-token", "user_key": "po-user"},
+            },
+        )
+        calls: list[dict] = []
+
+        def fake_post(url: str, **kwargs: object) -> FakeResponse:
+            calls.append({"url": url, **kwargs})
+            return FakeResponse()
+
+        send_remote_notifications(config, FakeLogger(), "hello", post_func=fake_post)
+
+        assert [call["url"] for call in calls] == ["https://api.pushover.net/1/messages.json"]
+
+
 if __name__ == "__main__":
-    test_notification_settings_are_persisted_and_enable_safe_mode_override()
+    test_notification_settings_are_persisted_and_service_checkbox_enables_remote_alerts()
+    test_remote_alerts_are_disabled_when_no_service_checkbox_is_enabled()
     test_telegram_notification_uses_runtime_settings()
     test_runtime_service_disable_overrides_legacy_telegram_enabled()
     test_legacy_safe_mode_false_still_allows_telegram()
     test_discord_dm_notification_uses_user_id_runtime_settings()
+    test_pushover_notification_uses_emergency_priority_payload()
+    test_send_remote_notifications_includes_pushover()
     print("notification settings tests passed")

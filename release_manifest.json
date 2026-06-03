@@ -1,8 +1,8 @@
 {
     "app_name":  "Maple Alert",
     "app_version":  "0.4.0",
-    "built_at_utc":  "2026-06-01T00:34:32.2901395Z",
-    "source_commit":  "1ef6ae7c24dba59f9f97a99da7403d1bfe2fadff",
+    "built_at_utc":  "2026-06-03T23:07:24.7951669Z",
+    "source_commit":  "3a9fd814d5efd1614728ca0aa527cb0c499b6942",
     "source_dirty":  true,
     "python":  "Python 3.14.5",
     "pyinstaller":  "6.20.0",
@@ -14,23 +14,23 @@
                   },
                   {
                       "path":  "MapleAlert.exe",
-                      "bytes":  7155006,
-                      "sha256":  "71030D580969340B1492ED85F2F792CDF7D248A94A3D5279005841CF8786AE2E"
+                      "bytes":  7161250,
+                      "sha256":  "AE1B2D36F0F7392CE8B26605EEE31C0E25B0876875B8A2BC3B6E4F5FDB8BE6A0"
                   },
                   {
                       "path":  "config.toml",
-                      "bytes":  6616,
-                      "sha256":  "B956A5434BC057BA4D7D95589EF6F522314491EB625CFF68CB816CEB8D83EF61"
+                      "bytes":  6924,
+                      "sha256":  "773C9762C3C6B1998BC675624D8EC8A80E811CC42C3E70E691BB7F9F5BA29EA9"
                   },
                   {
                       "path":  "README.md",
-                      "bytes":  1956,
-                      "sha256":  "88AB4A96A296381D914AFE11DE49B31D9C4D1A82417B6245A59BBE101F647B8E"
+                      "bytes":  2078,
+                      "sha256":  "CA68930345453C61227C99D08645AB768028B9DCBB0EFE1B7FA6C98F4BE1E0D9"
                   },
                   {
                       "path":  "README_FIRST.txt",
-                      "bytes":  2488,
-                      "sha256":  "5A9AACE42275604C027F6953332E1BB62CA4503BB325E2B50F97958615EF312F"
+                      "bytes":  2590,
+                      "sha256":  "A7B30E35A797CA4AB64D6B98D540B83D9F9574241CE597C931D65D5C383A7B2C"
                   },
                   {
                       "path":  "templates/free_market_title.png",
@@ -46,11 +46,6 @@
                       "path":  "alert_sounds/captcha_100pct.wav",
                       "bytes":  79424,
                       "sha256":  "7B0B57336E75430A231959800159B42EEC1EC0D27CF7471A27CE8FB01BA757A1"
-                  },
-                  {
-                      "path":  "alert_sounds/captcha_10pct.wav",
-                      "bytes":  79424,
-                      "sha256":  "FED4ECC50052F87FE389A72D6A6EEA97107901425D43A7400C0C5E1BF21F41F5"
                   },
                   {
                       "path":  "alert_sounds/captcha_200pct.wav",
@@ -73,14 +68,19 @@
                       "sha256":  "CC176616DADE42B8E681131C645F35AEDF4B25BD8F7E8578E164940B9D006D87"
                   },
                   {
+                      "path":  "alert_sounds/captcha_45pct.wav",
+                      "bytes":  79424,
+                      "sha256":  "CC65476A2CD3EDBBF3EEC3C9FE74B9004799B615A05B51EF514E9C701948B340"
+                  },
+                  {
+                      "path":  "alert_sounds/captcha_75pct.wav",
+                      "bytes":  79424,
+                      "sha256":  "E91891FCE5F8777003EEA8C42BF8200379FE8C806E6EFF551588E0396A2B46B8"
+                  },
+                  {
                       "path":  "alert_sounds/minimap_red_100pct.wav",
                       "bytes":  44144,
                       "sha256":  "A8CCD27E784AB94D999ABABF8C155D7E17F8511A54D2CF3FFA3EEC54D08490AC"
-                  },
-                  {
-                      "path":  "alert_sounds/minimap_red_10pct.wav",
-                      "bytes":  44144,
-                      "sha256":  "0256DFC246E4F69639B0EC2B7851B362E740EB61157B2309F0B054AA0DF991B5"
                   },
                   {
                       "path":  "alert_sounds/minimap_red_200pct.wav",
@@ -103,14 +103,19 @@
                       "sha256":  "D9E6D91937A57E00AD7D76E1E75386170688078E778881F0F5AB3786E8923CAF"
                   },
                   {
+                      "path":  "alert_sounds/minimap_red_45pct.wav",
+                      "bytes":  44144,
+                      "sha256":  "CCBBE2956AF9AAD59D9ADF78DCEBA4A2FC5C5CA0B8172D227A29B05FF0A1F412"
+                  },
+                  {
+                      "path":  "alert_sounds/minimap_red_75pct.wav",
+                      "bytes":  44144,
+                      "sha256":  "CC0719D65B354D71B78F354B57A98BE39F204B4074CF22493A146EBAC849AFF4"
+                  },
+                  {
                       "path":  "alert_sounds/watchdog_100pct.wav",
                       "bytes":  132344,
                       "sha256":  "7AB18EEA88674B2BD44D1CB64BC5B5CA1604009DC49ED9A0AED34A98AE491D26"
-                  },
-                  {
-                      "path":  "alert_sounds/watchdog_10pct.wav",
-                      "bytes":  132344,
-                      "sha256":  "2590D9C3A908C68522CAF9BF87BBC23928FC50714B8A984161716CC52A5CE8B4"
                   },
                   {
                       "path":  "alert_sounds/watchdog_200pct.wav",
@@ -131,6 +136,16 @@
                       "path":  "alert_sounds/watchdog_300pct.wav",
                       "bytes":  132344,
                       "sha256":  "0B0133D4B01DF44223D8A3001808BC052764054EDEA2659389EF2BBA1618A96D"
+                  },
+                  {
+                      "path":  "alert_sounds/watchdog_45pct.wav",
+                      "bytes":  132344,
+                      "sha256":  "8CA13E544B0BCA5089BAC29F208DB93076DDE6053EC508B04C8D21EA1E8F6ADD"
+                  },
+                  {
+                      "path":  "alert_sounds/watchdog_75pct.wav",
+                      "bytes":  132344,
+                      "sha256":  "7191CFC45F88F4B4E88751C27766BD3DC591C54D281A18BA98FAB0111B46DA15"
                   }
               ]
 }

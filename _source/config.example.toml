@@ -171,10 +171,20 @@ user_id = ""
 # Optional: sends to a Discord channel webhook instead of a DM.
 webhook_url = ""
 
+[pushover]
+# Pushover alerts need an app token and user key. Emergency priority is used for every alert.
+# Keep private values in config.local.toml, in the overlay DM settings dialog, or as:
+# PUSHOVER_APP_TOKEN and PUSHOVER_USER_KEY.
+enabled = false
+app_token = ""
+user_key = ""
+priority = 2
+retry_seconds = 30
+expire_seconds = 3600
+
 [notifications]
-# Remote alerts are off until enabled here or in the overlay DM settings dialog.
+# Remote alerts are enabled automatically when Telegram, Discord, or Pushover is enabled.
 settings_file = "runtime/notification_settings.json"
-remote_enabled = false
 
 [watchdog]
 heartbeat_file = "runtime/heartbeat.json"
