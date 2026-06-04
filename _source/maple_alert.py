@@ -226,8 +226,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "app_token": "",
         "user_key": "",
         "priority": 2,
-        "retry_seconds": 30,
-        "expire_seconds": 3600,
+        "retry_seconds": 60,
+        "expire_seconds": 30,
     },
     "notifications": {
         "settings_file": "runtime/notification_settings.json",
@@ -1088,13 +1088,13 @@ def send_pushover_notification(
         priority = 2
     priority = 2 if priority != 2 else priority
     try:
-        retry_seconds = max(30, int(pushover_cfg.get("retry_seconds", 30)))
+        retry_seconds = max(30, int(pushover_cfg.get("retry_seconds", 60)))
     except (TypeError, ValueError):
-        retry_seconds = 30
+        retry_seconds = 60
     try:
-        expire_seconds = max(retry_seconds, int(pushover_cfg.get("expire_seconds", 3600)))
+        expire_seconds = max(1, min(10800, int(pushover_cfg.get("expire_seconds", 30))))
     except (TypeError, ValueError):
-        expire_seconds = 3600
+        expire_seconds = 30
 
     payload: dict[str, Any] = {
         "token": token,

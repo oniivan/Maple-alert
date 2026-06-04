@@ -41,7 +41,7 @@ Telegram needs a bot token and chat ID. The recipient must start the bot first.
 
 Discord DMs need a bot token and numeric user ID. Discord webhooks need a webhook URL.
 
-Pushover needs an app token and user key. Pushover alerts use emergency priority.
+Pushover needs an app token and user key. Pushover alerts use a one-shot emergency profile.
 
 Private values should go in `config.local.toml` or the overlay settings, not in committed docs.
 

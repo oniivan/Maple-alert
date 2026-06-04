@@ -52,5 +52,5 @@ config check.
 Click `DM` on the overlay to paste Telegram, Discord, or Pushover details and
 send a test. Telegram needs a bot token plus chat ID, and the user must start
 the bot first. Discord DMs need a bot token plus numeric user ID; webhooks are
-also supported. Pushover needs an app token plus user key and uses emergency
-priority for alerts.
+also supported. Pushover needs an app token plus user key and uses a one-shot
+emergency profile for alerts.

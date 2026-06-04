@@ -172,15 +172,16 @@ user_id = ""
 webhook_url = ""
 
 [pushover]
-# Pushover alerts need an app token and user key. Emergency priority is used for every alert.
+# Pushover alerts need an app token and user key. Alerts use one-shot emergency priority.
 # Keep private values in config.local.toml, in the overlay DM settings dialog, or as:
 # PUSHOVER_APP_TOKEN and PUSHOVER_USER_KEY.
 enabled = false
 app_token = ""
 user_key = ""
 priority = 2
-retry_seconds = 30
-expire_seconds = 3600
+# One-shot emergency profile: expire before the first retry can happen.
+retry_seconds = 60
+expire_seconds = 30
 
 [notifications]
 # Remote alerts are enabled automatically when Telegram, Discord, or Pushover is enabled.

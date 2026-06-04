@@ -66,8 +66,8 @@ def make_config(temp_dir: str) -> dict:
             "app_token": "",
             "user_key": "",
             "priority": 2,
-            "retry_seconds": 30,
-            "expire_seconds": 3600,
+            "retry_seconds": 60,
+            "expire_seconds": 30,
         },
     }
 
@@ -179,7 +179,7 @@ def test_discord_dm_notification_uses_user_id_runtime_settings() -> None:
         assert calls[1]["json"] == {"content": "hello"}
 
 
-def test_pushover_notification_uses_emergency_priority_payload() -> None:
+def test_pushover_notification_uses_one_shot_emergency_priority_payload() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         config = make_config(temp_dir)
         write_notification_settings(
@@ -202,8 +202,8 @@ def test_pushover_notification_uses_emergency_priority_payload() -> None:
             "message": "hello",
             "title": "Maple Alert",
             "priority": 2,
-            "retry": 30,
-            "expire": 3600,
+            "retry": 60,
+            "expire": 30,
         }
 
 
@@ -236,6 +236,6 @@ if __name__ == "__main__":
     test_runtime_service_disable_overrides_legacy_telegram_enabled()
     test_legacy_safe_mode_false_still_allows_telegram()
     test_discord_dm_notification_uses_user_id_runtime_settings()
-    test_pushover_notification_uses_emergency_priority_payload()
+    test_pushover_notification_uses_one_shot_emergency_priority_payload()
     test_send_remote_notifications_includes_pushover()
     print("notification settings tests passed")
