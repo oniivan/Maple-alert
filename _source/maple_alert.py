@@ -487,6 +487,51 @@ class SystemVolumePromptTracker:
         return True
 
 
+def system_volume_warning_detail(volume_state: SystemVolumeState) -> str:
+    if volume_state.muted is True:
+        return "System volume is muted."
+    if volume_state.percent is not None:
+        return f"System volume is {volume_state.percent}%, below {SYSTEM_VOLUME_WARNING_PERCENT}%."
+    if volume_state.error:
+        return f"System volume status could not be read: {volume_state.error}"
+    return "System volume status could not be read."
+
+
+def system_volume_warning_notification_message(volume_state: SystemVolumeState) -> str:
+    return (
+        f"Maple alert: system volume warning. {system_volume_warning_detail(volume_state)} "
+        "Press IGNORE in the main window to suppress future warnings."
+    )
+
+
+def notify_system_volume_warning(
+    config: dict[str, Any],
+    volume_state: SystemVolumeState,
+    *,
+    logger: logging.Logger | None = None,
+    sender: Callable[[dict[str, Any], logging.Logger, str], None] | None = None,
+) -> None:
+    active_logger = logger if logger is not None else logging.getLogger("maple_alert")
+    send_func = sender if sender is not None else send_remote_notifications
+    try:
+        send_func(config, active_logger, system_volume_warning_notification_message(volume_state))
+    except Exception as exc:
+        active_logger.warning("System volume warning remote notification failed: %s", exc)
+
+
+def activate_tk_window(window: Any) -> None:
+    for method_name, args in (
+        ("deiconify", ()),
+        ("lift", ()),
+        ("attributes", ("-topmost", True)),
+        ("focus_force", ()),
+    ):
+        try:
+            getattr(window, method_name)(*args)
+        except Exception:
+            pass
+
+
 @dataclass(frozen=True)
 class WindowInfo:
     title: str
@@ -4034,7 +4079,7 @@ def run_overlay(config: dict[str, Any]) -> int:
         existing = state.get("system_volume_prompt_dialog")
         try:
             if existing is not None and existing.winfo_exists():
-                existing.lift()
+                activate_tk_window(existing)
                 return
         except Exception:
             pass
@@ -4077,12 +4122,7 @@ def run_overlay(config: dict[str, Any]) -> int:
             font=("Consolas", 9, "bold"),
             text="X",
         )
-        if volume_state.muted is True:
-            detail = "System volume is muted."
-        elif volume_state.percent is not None:
-            detail = f"System volume is {volume_state.percent}%, below {SYSTEM_VOLUME_WARNING_PERCENT}%."
-        else:
-            detail = "System volume status could not be read."
+        detail = system_volume_warning_detail(volume_state)
         canvas_prompt.create_rectangle(8, 36, width - 9, height - 9, fill="#151a20", outline="#7a6218")
         canvas_prompt.create_text(
             width // 2,
@@ -4126,6 +4166,20 @@ def run_overlay(config: dict[str, Any]) -> int:
         canvas_prompt.bind("<ButtonPress-1>", start_prompt_drag)
         canvas_prompt.bind("<B1-Motion>", move_prompt)
         dialog.protocol("WM_DELETE_WINDOW", close_system_volume_prompt)
+        activate_tk_window(dialog)
+        try:
+            dialog.after(80, lambda: activate_tk_window(dialog))
+        except Exception:
+            pass
+
+        notify_logger = logging.getLogger("maple_alert_overlay_notify")
+        notify_logger.addHandler(logging.NullHandler())
+        threading.Thread(
+            target=notify_system_volume_warning,
+            args=(config, volume_state),
+            kwargs={"logger": notify_logger},
+            daemon=True,
+        ).start()
 
     def open_notification_settings_dialog() -> None:
         existing = state.get("notification_dialog")

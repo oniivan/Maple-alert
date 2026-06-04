@@ -1,8 +1,8 @@
 {
     "app_name":  "Maple Alert",
     "app_version":  "0.4.0",
-    "built_at_utc":  "2026-06-04T00:37:23.7677434Z",
-    "source_commit":  "9f925d6ef9bd997e5b589e51e7be45cf5e235260",
+    "built_at_utc":  "2026-06-04T10:30:02.8210943Z",
+    "source_commit":  "7833e9751f08198ae24f6b18768bd0622b7cf82e",
     "source_dirty":  true,
     "python":  "Python 3.14.5",
     "pyinstaller":  "6.20.0",
@@ -14,8 +14,8 @@
                   },
                   {
                       "path":  "MapleAlert.exe",
-                      "bytes":  7161261,
-                      "sha256":  "F2966BA12E0A862D94430A5BCCC8DF4E190AF8C6475D58D37E22F2DD869AF8FE"
+                      "bytes":  7162464,
+                      "sha256":  "0A05D43E1A82F16348A427E4CF63271B181CAF33E705A44D74D428DCF11F436C"
                   },
                   {
                       "path":  "config.toml",
@@ -29,8 +29,8 @@
                   },
                   {
                       "path":  "README_FIRST.txt",
-                      "bytes":  2590,
-                      "sha256":  "A7B30E35A797CA4AB64D6B98D540B83D9F9574241CE597C931D65D5C383A7B2C"
+                      "bytes":  2636,
+                      "sha256":  "3EC1453742D7CC7E18FA3068B4FE881B7522D6A086B5E4750C7346AFD8BC5405"
                   },
                   {
                       "path":  "templates/free_market_title.png",

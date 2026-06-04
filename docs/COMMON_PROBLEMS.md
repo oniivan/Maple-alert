@@ -19,7 +19,7 @@ Check these in order:
 
 ## Low Volume Warning
 
-The overlay pulses yellow when Windows output is muted or below `30%`. `IGNORE` appears only while the warning is active. After ignoring, a flashing yellow `WARN` button remains until the volume is fixed. A warning prompt appears if system volume stays muted or below `30%` for 3 minutes.
+The overlay pulses yellow when Windows output is muted or below `30%`. `IGNORE` appears only while the warning is active. After ignoring, a flashing yellow `WARN` button remains until the volume is fixed. A warning prompt appears if system volume stays muted or below `30%` for 3 minutes, and configured DMs are sent at the same time.
 
 ## Overlay Still Visible After Exit
 

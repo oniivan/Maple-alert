@@ -23,7 +23,8 @@ send a test message.
 If the top bar flashes yellow for system volume, Windows is muted or below 30%.
 The IGNORE button appears only while that warning is active. Click it to suppress
 the current warning; a flashing WARN button remains while that warning is ignored.
-A warning prompt appears if system volume stays muted or below 30% for 3 minutes.
+A warning prompt appears if system volume stays muted or below 30% for 3 minutes,
+and configured DMs are sent at the same time.
 If the top bar flashes red with MAPLE NOT DETECTED, the game window was
 not found and monitor fallback is active. Starting Maple later is okay; it
 keeps checking and will switch when the window appears.
