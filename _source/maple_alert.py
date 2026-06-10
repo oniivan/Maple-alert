@@ -24,6 +24,7 @@ import cv2
 import mss
 import numpy as np
 
+from detectors.dead_player import detect_dead_player
 from detectors.minimap_red import detect_minimap_red, locate_minimap_content_rect
 from detectors.minimap_title import detect_free_market_title
 from vision_core import (
@@ -56,6 +57,7 @@ OVERLAY_PLAYER_VOLUME_LABEL = "PLAYER DETECT VOLUME"
 OVERLAY_LIE_VOLUME_LABEL = "LIE DETECT VOLUME"
 ALERT_VOLUME_KEYS = {
     "captcha": "lie_detect_volume_percent",
+    "dead_player": "lie_detect_volume_percent",
     "minimap_red": "player_detected_volume_percent",
 }
 ALERT_VOLUME_MAX_PERCENT = 300
@@ -76,6 +78,11 @@ FREE_MARKET_FORCE_CLOSED_MESSAGE = (
     "SAFEGUARD: Force-closed the game."
 )
 FREE_MARKET_EXIT_FAILED_WARNING = "WARNING: msw.exe was not detected, unable to close the game!"
+DEAD_PLAYER_FORCE_CLOSED_MESSAGE = (
+    "Detected player death.\n\n"
+    "SAFEGUARD: Force-closed the game."
+)
+DEAD_PLAYER_EXIT_FAILED_WARNING = "WARNING: msw.exe was not detected, unable to close the game!"
 
 try:
     import tomllib
@@ -114,6 +121,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "roi": {
         "captcha": {"x1": 0.25, "y1": 0.25, "x2": 0.75, "y2": 0.75},
         "minimap": {"x1": 0.0, "y1": 0.0, "x2": 0.2398, "y2": 0.3893},
+        "dead_player": {"x1": 0.20, "y1": 0.0, "x2": 0.80, "y2": 0.36},
     },
     "scaling": {
         "enabled": True,
@@ -190,6 +198,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "search_width": 560,
             "search_height": 70,
         },
+        "dead_player": {
+            "enabled": True,
+            "template_path": "templates/dead_main_prompt.png",
+            "threshold": 0.88,
+            "scale_min": 0.90,
+            "scale_max": 1.10,
+            "scale_steps": 9,
+        },
     },
     "alerts": {
         "safe_mode": True,
@@ -201,6 +217,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "player_detected_volume_percent": 200,
         "alert_settings_file": "runtime/alert_settings.json",
         "captcha_repeat_seconds": 30,
+        "dead_player_repeat_seconds": 30,
         "minimap_required_seconds": 20,
         "minimap_repeat_seconds": 15,
         "detection_log_interval_seconds": 5,
@@ -213,6 +230,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "reset_after_clear_seconds": 12,
         "failure_status_seconds": 20,
         "test_request_file": "runtime/free_market_exit_test.json",
+    },
+    "dead_player_exit": {
+        "enabled": True,
+        "countdown_seconds": 180,
+        "reset_after_clear_seconds": 12,
+        "failure_status_seconds": 20,
     },
     "telegram": {"bot_token": "", "chat_id": ""},
     "discord": {
@@ -243,10 +266,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "restart_delay_seconds": 3,
         "startup_grace_seconds": 15,
         "crash_window_seconds": 300,
-        "crash_alert_count": 3,
+        "crash_alert_count": 5,
         "monitor_down_alert_seconds": 120,
         "watchdog_realert_seconds": 120,
         "healthy_clear_seconds": 600,
+        "sleep_silence_seconds": 3600,
     },
     "overlay": {
         "enabled": True,
@@ -333,17 +357,23 @@ def watchdog_health_title(snapshot: dict[str, Any]) -> str:
     if reason == "monitor_down":
         return f"{subject} DOWN"
     if reason == "crash_loop":
-        count = int(snapshot.get("crash_count_window", 0) or 0)
+        count = int(snapshot.get("display_crash_count", snapshot.get("crash_count_window", 0)) or 0)
         window = minutes_label(float(snapshot.get("window_seconds", 300) or 300))
         return f"{subject} CRASHED {count} TIMES IN {window}"
     return ""
 
 
-def overlay_watchdog_health_text(snapshot: dict[str, Any] | None, spin: str) -> str:
-    title = watchdog_health_title(snapshot if isinstance(snapshot, dict) else {})
-    if title:
-        return f"{title} {spin}"
-    return f"MONITOR HEALTH ALERT {spin}"
+def overlay_watchdog_health_text(
+    snapshot: dict[str, Any] | None,
+    spin: str,
+    now_epoch: float | None = None,
+) -> str:
+    health = snapshot if isinstance(snapshot, dict) else {}
+    count = max(0, int(health.get("display_crash_count", health.get("crash_count_window", 0)) or 0))
+    timestamp = time.time() if now_epoch is None else float(now_epoch)
+    if int(timestamp // 3.0) % 2 == 0:
+        return f"ERROR: MAPLEALERT CRASHED {count} TIMES {spin}"
+    return f"SEE ERROR IN TERMINAL {spin}"
 
 
 def overlay_drawer_target_height(minimized: bool) -> int:
@@ -456,10 +486,12 @@ class SystemVolumePromptTracker:
         self.repeat_seconds = max(1.0, float(repeat_seconds))
         self.bad_since: float | None = None
         self.next_prompt_at: float | None = None
+        self.was_prompt_open = False
 
     def reset(self) -> None:
         self.bad_since = None
         self.next_prompt_at = None
+        self.was_prompt_open = False
 
     def update(
         self,
@@ -476,14 +508,18 @@ class SystemVolumePromptTracker:
         timestamp = float(now)
         if self.bad_since is None:
             self.bad_since = timestamp
-        if timestamp - self.bad_since < self.hold_seconds:
-            return False
         if prompt_open:
+            self.was_prompt_open = True
+            return False
+        if self.was_prompt_open:
+            self.was_prompt_open = False
+            self.next_prompt_at = timestamp + self.repeat_seconds
+            return False
+        if timestamp - self.bad_since < self.hold_seconds:
             return False
         if self.next_prompt_at is not None and timestamp < self.next_prompt_at:
             return False
 
-        self.next_prompt_at = timestamp + self.repeat_seconds
         return True
 
 
@@ -548,25 +584,41 @@ class ExitDecision:
     seconds_left: int | None = None
 
 
+def format_seconds_countdown(seconds: int | float) -> str:
+    remaining = max(0, int(math.ceil(float(seconds))))
+    return f"{remaining} seconds."
+
+
+def format_minutes_seconds_countdown(seconds: int | float) -> str:
+    remaining = max(0, int(math.ceil(float(seconds))))
+    minutes, secs = divmod(remaining, 60)
+    return f"{minutes}m {secs}s"
+
+
 class WatchdogFailureTracker:
     def __init__(self, config: dict[str, Any], subject: str = "MONITOR") -> None:
         watchdog_cfg = config.get("watchdog", {})
         self.subject = subject.strip().upper() or "MONITOR"
         self.window_seconds = max(30.0, float(watchdog_cfg.get("crash_window_seconds", 300)))
-        self.crash_alert_count = max(1, int(watchdog_cfg.get("crash_alert_count", 3)))
+        self.crash_alert_count = max(1, int(watchdog_cfg.get("crash_alert_count", 5)))
         self.monitor_down_alert_seconds = max(
             10.0,
             float(watchdog_cfg.get("monitor_down_alert_seconds", 120)),
         )
-        self.realert_seconds = max(10.0, float(watchdog_cfg.get("watchdog_realert_seconds", 120)))
+        self.realert_seconds = max(60.0, float(watchdog_cfg.get("watchdog_realert_seconds", 120)))
         self.healthy_clear_seconds = max(10.0, float(watchdog_cfg.get("healthy_clear_seconds", 600)))
+        self.sleep_silence_seconds = max(60.0, float(watchdog_cfg.get("sleep_silence_seconds", 3600)))
         self.events: list[dict[str, Any]] = []
         self.monitor_unavailable_since: float | None = None
         self.unhealthy_since: float | None = None
         self.healthy_since: float | None = None
         self.latched_title = ""
         self.latched_reason = ""
+        self.latched_crash_count = 0
         self.last_sound_at: float | None = None
+        self.remote_sent = False
+        self.alerts_silenced_until_healthy = False
+        self.silence_reason = ""
 
     def record_abnormal(self, reason: str, now: float | None = None, exit_code: int | None = None) -> None:
         timestamp = time.time() if now is None else float(now)
@@ -596,6 +648,8 @@ class WatchdogFailureTracker:
 
         if monitor_available:
             self.monitor_unavailable_since = None
+            self.alerts_silenced_until_healthy = False
+            self.silence_reason = ""
         elif self.monitor_unavailable_since is None:
             self.monitor_unavailable_since = timestamp
 
@@ -604,6 +658,12 @@ class WatchdogFailureTracker:
             if self.monitor_unavailable_since is None
             else max(0.0, timestamp - self.monitor_unavailable_since)
         )
+        if (
+            not monitor_available
+            and down_seconds >= self.sleep_silence_seconds
+            and not self.alerts_silenced_until_healthy
+        ):
+            self.suppress_alerts_until_healthy(f"{self.subject.lower()} down over sleep threshold")
         crash_count = len(events)
         raw_reason = ""
         raw_title = ""
@@ -624,6 +684,8 @@ class WatchdogFailureTracker:
             self.healthy_since = None
             self.latched_title = raw_title
             self.latched_reason = raw_reason
+            if raw_reason == "crash_loop":
+                self.latched_crash_count = crash_count
         elif self.unhealthy_since is not None:
             if monitor_available:
                 self.healthy_since = self.healthy_since or timestamp
@@ -632,6 +694,8 @@ class WatchdogFailureTracker:
                     self.healthy_since = None
                     self.latched_title = ""
                     self.latched_reason = ""
+                    self.latched_crash_count = 0
+                    self.remote_sent = False
                 else:
                     latched = True
             else:
@@ -641,6 +705,9 @@ class WatchdogFailureTracker:
         active = raw_active or latched
         reason = raw_reason or (self.latched_reason if latched else "")
         title = raw_title or (self.latched_title if latched else "")
+        display_crash_count = crash_count
+        if reason == "crash_loop" and raw_reason != "crash_loop":
+            display_crash_count = self.latched_crash_count
         return {
             "active": active,
             "subject": self.subject,
@@ -649,16 +716,21 @@ class WatchdogFailureTracker:
             "reason": reason,
             "title": title,
             "crash_count_window": crash_count,
+            "display_crash_count": display_crash_count,
             "crash_alert_count": self.crash_alert_count,
             "window_seconds": self.window_seconds,
             "monitor_down_seconds": round(down_seconds, 1),
             "monitor_down_alert_seconds": self.monitor_down_alert_seconds,
             "unhealthy_since": self.unhealthy_since,
             "healthy_since": self.healthy_since,
+            "alerts_silenced_until_healthy": self.alerts_silenced_until_healthy,
+            "silence_reason": self.silence_reason,
             "recent_events": events[-5:],
         }
 
     def should_sound(self, snapshot: dict[str, Any], now: float | None = None) -> bool:
+        if bool(snapshot.get("alerts_silenced_until_healthy", False)):
+            return False
         if not bool(snapshot.get("active", False)):
             return False
         if not bool(snapshot.get("soundable", False)):
@@ -668,8 +740,26 @@ class WatchdogFailureTracker:
             return True
         return timestamp - self.last_sound_at >= self.realert_seconds
 
-    def mark_sounded(self, now: float | None = None) -> None:
+    def mark_sounded(self, snapshot: dict[str, Any] | None = None, now: float | None = None) -> None:
         self.last_sound_at = time.time() if now is None else float(now)
+        if isinstance(snapshot, dict) and snapshot.get("reason") == "crash_loop":
+            self.events.clear()
+
+    def should_send_remote(self, snapshot: dict[str, Any]) -> bool:
+        if bool(snapshot.get("alerts_silenced_until_healthy", False)):
+            return False
+        if not bool(snapshot.get("active", False)):
+            return False
+        if not bool(snapshot.get("soundable", False)):
+            return False
+        return not self.remote_sent
+
+    def mark_remote_sent(self) -> None:
+        self.remote_sent = True
+
+    def suppress_alerts_until_healthy(self, reason: str) -> None:
+        self.alerts_silenced_until_healthy = True
+        self.silence_reason = str(reason or "long downtime")
 
 
 def system_volume_button_state(warning_active: bool, ignored: bool, pulse_on: bool) -> dict[str, Any]:
@@ -1834,15 +1924,22 @@ class AlertManager:
     def __init__(self, config: dict[str, Any], logger: logging.Logger) -> None:
         self.config = config
         self.logger = logger
-        self.last_alert: dict[str, float] = {"captcha": 0.0, "minimap_red": 0.0}
-        self.last_detection_log: dict[str, float] = {"captcha": 0.0, "minimap_red": 0.0}
+        self.last_alert: dict[str, float] = {"captcha": 0.0, "dead_player": 0.0, "minimap_red": 0.0}
+        self.last_detection_log: dict[str, float] = {"captcha": 0.0, "dead_player": 0.0, "minimap_red": 0.0}
         self.minimap_seen_since: float | None = None
-        self.active: dict[str, bool] = {"captcha": False, "minimap_red": False}
-        self.last_seen_epoch: dict[str, float | None] = {"captcha": None, "minimap_red": None}
+        self.active: dict[str, bool] = {"captcha": False, "dead_player": False, "minimap_red": False}
+        self.remote_sent: dict[str, bool] = {"captcha": False, "dead_player": False, "minimap_red": False}
+        self.last_seen_epoch: dict[str, float | None] = {
+            "captcha": None,
+            "dead_player": None,
+            "minimap_red": None,
+        }
 
     def handle_result(self, kind: str, result: DetectionResult) -> bool:
         if kind == "captcha":
             return self._handle_captcha(result)
+        if kind == "dead_player":
+            return self._handle_dead_player(result)
         if kind == "minimap_red":
             return self._handle_minimap_red(result)
 
@@ -1859,6 +1956,7 @@ class AlertManager:
                 self._print_state_change("captcha", "cleared")
             self.active["captcha"] = False
             self.last_alert["captcha"] = 0.0
+            self.remote_sent["captcha"] = False
             return False
 
         self.last_seen_epoch["captcha"] = time.time()
@@ -1874,6 +1972,32 @@ class AlertManager:
 
         if seconds_since_alert >= repeat_seconds:
             self._fire_alert("captcha", result)
+            return True
+        return False
+
+    def _handle_dead_player(self, result: DetectionResult) -> bool:
+        if not result.detected:
+            if self.active.get("dead_player", False):
+                self._print_state_change("dead_player", "cleared")
+            self.active["dead_player"] = False
+            self.last_alert["dead_player"] = 0.0
+            self.remote_sent["dead_player"] = False
+            return False
+
+        self.last_seen_epoch["dead_player"] = time.time()
+        if not self.active.get("dead_player", False):
+            self.active["dead_player"] = True
+            self._print_state_change("dead_player", "detected")
+
+        now = time.monotonic()
+        repeat_seconds = max(0.0, float(self.config["alerts"].get("dead_player_repeat_seconds", 30)))
+        seconds_since_alert = now - self.last_alert.get("dead_player", 0.0)
+        next_alert_in = max(0.0, repeat_seconds - seconds_since_alert)
+
+        self._log_detection("dead_player", result, {"next_alert_in_seconds": round(next_alert_in, 1)})
+
+        if seconds_since_alert >= repeat_seconds:
+            self._fire_alert("dead_player", result)
             return True
         return False
 
@@ -1893,9 +2017,9 @@ class AlertManager:
             self.minimap_seen_since = None
             self.active["minimap_red"] = False
             self.last_alert["minimap_red"] = 0.0
+            self.remote_sent["minimap_red"] = False
             return False
 
-        self.last_seen_epoch["minimap_red"] = time.time()
         if self.minimap_seen_since is None:
             self.minimap_seen_since = now
             self.active["minimap_red"] = True
@@ -1921,6 +2045,7 @@ class AlertManager:
         self._log_detection("minimap_red", result, log_extra)
 
         if (first_alert_pending and ready_for_first_alert) or ready_for_repeat_alert:
+            self.last_seen_epoch["minimap_red"] = time.time()
             result.info["present_for_seconds"] = round(present_for, 1)
             self._fire_alert("minimap_red", result)
             return True
@@ -1930,13 +2055,17 @@ class AlertManager:
         active_alert: str | None = None
         if self.active.get("captcha", False):
             active_alert = "lie_detector"
+        elif self.active.get("dead_player", False):
+            active_alert = "player_dead"
         elif self.active.get("minimap_red", False) and self.last_alert.get("minimap_red", 0.0) > 0.0:
             active_alert = "player_detected"
 
         return {
             "lie_last_seen_epoch": self.last_seen_epoch.get("captcha"),
+            "dead_last_seen_epoch": self.last_seen_epoch.get("dead_player"),
             "player_last_seen_epoch": self.last_seen_epoch.get("minimap_red"),
             "lie_active": bool(self.active.get("captcha", False)),
+            "dead_active": bool(self.active.get("dead_player", False)),
             "player_present": bool(self.active.get("minimap_red", False)),
             "player_alerting": bool(
                 self.active.get("minimap_red", False)
@@ -1976,6 +2105,8 @@ class AlertManager:
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if kind == "captcha":
             label = "CAPTCHA/lie detector"
+        elif kind == "dead_player":
+            label = "player dead prompt"
         elif kind == "minimap_red":
             label = "red minimap marker"
         else:
@@ -1990,13 +2121,25 @@ class AlertManager:
         print(message, flush=True)
         self.logger.info("Alert fired: %s", message)
         self._play_sound(kind)
-        send_remote_notifications(self.config, self.logger, message)
+        if not self.remote_sent.get(kind, False):
+            send_remote_notifications(self.config, self.logger, message)
+            self.remote_sent[kind] = True
+        else:
+            self.logger.info("Remote alert suppressed for ongoing %s instance", kind)
         self.last_alert[kind] = time.monotonic()
+
+    def remote_sent_for(self, kind: str) -> bool:
+        return bool(self.remote_sent.get(kind, False))
+
+    def mark_remote_sent(self, kind: str) -> None:
+        self.remote_sent[kind] = True
 
     def _message_for(self, kind: str, result: DetectionResult) -> str:
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if kind == "captcha":
             return f"[{stamp}] Maple alert: CAPTCHA/lie detector candidate. confidence={result.confidence:.3f}"
+        if kind == "dead_player":
+            return f"[{stamp}] Maple alert: player dead prompt. confidence={result.confidence:.3f}"
         if kind == "minimap_red":
             pixels = result.info.get("red_pixels", "?")
             percent = result.info.get("red_percent", "?")
@@ -2146,21 +2289,140 @@ class FreeMarketExitController:
         return bool(self.failure_message) and timestamp < self.failure_until_epoch
 
 
+class DeadPlayerExitController:
+    def __init__(self, config: dict[str, Any]) -> None:
+        cfg = config.get("dead_player_exit", {})
+        self.enabled = bool(cfg.get("enabled", True))
+        self.countdown_seconds = max(1.0, float(cfg.get("countdown_seconds", 180)))
+        self.reset_after_clear_seconds = max(1.0, float(cfg.get("reset_after_clear_seconds", 12)))
+        self.failure_status_seconds = max(1.0, float(cfg.get("failure_status_seconds", 20)))
+        self.state = "armed"
+        self.prompt_started_at: float | None = None
+        self.clear_since: float | None = None
+        self.exit_requested = False
+        self.target_pid: int | None = None
+        self.failure_message = ""
+        self.failure_until_epoch = 0.0
+
+    def _start_prompt(self, timestamp: float, target_pid: int | None) -> ExitDecision:
+        self.clear_since = None
+        if target_pid:
+            self.target_pid = int(target_pid)
+        self.state = "prompting"
+        self.prompt_started_at = timestamp
+        self.exit_requested = False
+        return ExitDecision("show_prompt", int(round(self.countdown_seconds)))
+
+    def _countdown_decision(self, timestamp: float) -> ExitDecision:
+        if self.prompt_started_at is None:
+            return ExitDecision()
+        elapsed = timestamp - self.prompt_started_at
+        seconds_left = max(0, int(math.ceil(self.countdown_seconds - elapsed)))
+        if elapsed >= self.countdown_seconds and not self.exit_requested:
+            self.exit_requested = True
+            return ExitDecision("exit", 0)
+        return ExitDecision(None, seconds_left)
+
+    def _handle_clear(self, timestamp: float) -> ExitDecision:
+        self.clear_since = self.clear_since or timestamp
+        if timestamp - self.clear_since >= self.reset_after_clear_seconds:
+            self.reset()
+            return ExitDecision("reset")
+        if self.state == "prompting":
+            if self.prompt_started_at is None:
+                return ExitDecision()
+            elapsed = timestamp - self.prompt_started_at
+            seconds_left = max(0, int(math.ceil(self.countdown_seconds - elapsed)))
+            return ExitDecision(None, seconds_left)
+        return ExitDecision()
+
+    def update(
+        self,
+        result: DetectionResult,
+        *,
+        now: float | None = None,
+        target_pid: int | None = None,
+    ) -> ExitDecision:
+        timestamp = time.monotonic() if now is None else float(now)
+        if not self.enabled:
+            return ExitDecision()
+
+        if self.state == "failed":
+            if not result.detected:
+                return self._handle_clear(timestamp)
+            return ExitDecision()
+
+        if result.detected:
+            self.clear_since = None
+            if self.state == "armed":
+                return self._start_prompt(timestamp, target_pid)
+            if self.state == "prompting":
+                return self._countdown_decision(timestamp)
+            return ExitDecision()
+
+        if self.state in {"prompting", "cancelled"}:
+            return self._handle_clear(timestamp)
+        return ExitDecision()
+
+    def cancel(self, *, now: float | None = None) -> None:
+        if self.state == "prompting":
+            self.state = "cancelled"
+            self.clear_since = None
+        _ = now
+
+    def reset(self) -> None:
+        self.state = "armed"
+        self.prompt_started_at = None
+        self.clear_since = None
+        self.exit_requested = False
+        self.target_pid = None
+
+    def report_failure(self, message: str, *, now_epoch: float | None = None) -> None:
+        timestamp = time.time() if now_epoch is None else float(now_epoch)
+        self.state = "failed"
+        self.prompt_started_at = None
+        self.clear_since = None
+        self.exit_requested = False
+        self.target_pid = None
+        self.failure_message = message
+        self.failure_until_epoch = timestamp + self.failure_status_seconds
+
+    def failure_active(self, *, now_epoch: float | None = None) -> bool:
+        timestamp = time.time() if now_epoch is None else float(now_epoch)
+        return bool(self.failure_message) and timestamp < self.failure_until_epoch
+
+
 class FreeMarketExitPrompt:
     def __init__(
         self,
         countdown_seconds: int,
         cancel_callback: Callable[[], None] | None = None,
         opacity: float = 0.92,
+        title: str = "SAFEGUARD",
+        message: str = (
+            "You were sent to the Free Market after a lie detection.\n"
+            "Safeguard: exiting the game in"
+        ),
+        force_closed_message: str = FREE_MARKET_FORCE_CLOSED_MESSAGE,
+        failure_warning: str = FREE_MARKET_EXIT_FAILED_WARNING,
+        countdown_formatter: Callable[[int | float], str] = format_seconds_countdown,
+        thread_name: str = "free-market-exit-prompt",
+        initial_mode: str = "countdown",
     ) -> None:
         self.countdown_seconds = max(1, int(countdown_seconds))
         self.cancel_callback = cancel_callback
         self.opacity = max(0.35, min(1.0, float(opacity)))
+        self.title = title
+        self.message = message
+        self.force_closed_message = force_closed_message
+        self.failure_warning = failure_warning
+        self.countdown_formatter = countdown_formatter
+        self.initial_mode = initial_mode
         self.cancelled = threading.Event()
         self.closed = threading.Event()
         self._root: Any = None
         self._ui: dict[str, Any] = {}
-        self._thread = threading.Thread(target=self._run, name="free-market-exit-prompt", daemon=True)
+        self._thread = threading.Thread(target=self._run, name=thread_name, daemon=True)
 
     def start(self) -> None:
         self._thread.start()
@@ -2178,6 +2440,9 @@ class FreeMarketExitPrompt:
             self.cancelled.clear()
             return True
         return False
+
+    def is_closed(self) -> bool:
+        return self.closed.is_set()
 
     def show_force_closed_message(self) -> None:
         root = self._root
@@ -2198,7 +2463,7 @@ class FreeMarketExitPrompt:
         canvas.itemconfigure(
             self._ui["message"],
             fill="#d7fbe1",
-            text=FREE_MARKET_FORCE_CLOSED_MESSAGE,
+            text=self.force_closed_message,
         )
         canvas.itemconfigure(self._ui["countdown"], text="")
         canvas.itemconfigure(self._ui["warning"], text="")
@@ -2224,7 +2489,7 @@ class FreeMarketExitPrompt:
         canvas.itemconfigure(
             self._ui["warning"],
             fill="#ff7b72",
-            text=FREE_MARKET_EXIT_FAILED_WARNING.upper(),
+            text=self.failure_warning.upper(),
         )
         canvas.itemconfigure(self._ui["button"], fill="#25171a", outline="#70404a")
         canvas.itemconfigure(self._ui["button_label"], fill="#ffb0aa", text="CLOSE")
@@ -2263,7 +2528,7 @@ class FreeMarketExitPrompt:
             anchor="w",
             fill="#ffe3e0",
             font=("Consolas", 10, "bold"),
-            text="SAFEGUARD",
+            text=self.title,
         )
         panel = canvas.create_rectangle(8, 36, width - 9, height - 9, fill="#151a20", outline="#ff6b60")
         message = canvas.create_text(
@@ -2273,10 +2538,7 @@ class FreeMarketExitPrompt:
             fill="#ffe3e0",
             font=("Consolas", 11, "bold"),
             justify="center",
-            text=(
-                "You were sent to the Free Market after a lie detection.\n"
-                "Safeguard: exiting the game in"
-            ),
+            text=self.message,
         )
         countdown_label = canvas.create_text(
             width // 2,
@@ -2332,7 +2594,7 @@ class FreeMarketExitPrompt:
             remaining = max(0, int(state["remaining"]))
             canvas.itemconfigure(
                 countdown_label,
-                text=f"{remaining} seconds.",
+                text=self.countdown_formatter(remaining),
             )
             state["pulse"] = not bool(state["pulse"])
             canvas.itemconfigure(dot, fill="#ff3b30" if state["pulse"] else "#7a1815")
@@ -2384,7 +2646,12 @@ class FreeMarketExitPrompt:
         canvas.bind("<B1-Motion>", on_drag)
         canvas.bind("<ButtonRelease-1>", on_click)
         root.protocol("WM_DELETE_WINDOW", lambda: None)
-        tick()
+        if self.initial_mode == "closed":
+            self._show_force_closed_message()
+        elif self.initial_mode == "failed":
+            self._show_exit_failed_warning()
+        else:
+            tick()
         try:
             root.mainloop()
         finally:
@@ -2783,6 +3050,7 @@ def validate_config(config: dict[str, Any]) -> list[dict[str, str]]:
 
     validate_roi_config(issues, config, "captcha")
     validate_roi_config(issues, config, "minimap")
+    validate_roi_config(issues, config, "dead_player")
 
     for key in ("alert_volume_percent", "lie_detect_volume_percent", "player_detected_volume_percent"):
         if key in alerts_cfg:
@@ -2964,6 +3232,7 @@ def required_portable_files(config_dir: Path) -> list[tuple[str, Path]]:
         ("App", config_dir / "MapleAlert.exe"),
         ("Config", config_dir / "config.toml"),
         ("Watchdog", config_dir / "_internal" / "watchdog_supervisor.ps1"),
+        ("Dead prompt template", config_dir / "templates" / "dead_main_prompt.png"),
         ("Lie alert sound", config_dir / "alert_sounds" / "captcha_100pct.wav"),
         ("Player alert sound", config_dir / "alert_sounds" / "minimap_red_100pct.wav"),
     ]
@@ -3020,8 +3289,13 @@ def build_setup_check_report(
             base = Rect(0, 0, rect.width, rect.height)
             captcha_roi = roi_to_rect(base, config["roi"]["captcha"])
             minimap_roi = roi_to_rect(base, config["roi"]["minimap"])
+            dead_player_roi = roi_to_rect(base, config["roi"]["dead_player"])
             lines.append(f"Lie ROI: {captcha_roi.width}x{captcha_roi.height}+{captcha_roi.left}+{captcha_roi.top}")
             lines.append(f"Minimap ROI: {minimap_roi.width}x{minimap_roi.height}+{minimap_roi.left}+{minimap_roi.top}")
+            lines.append(
+                f"Dead ROI: {dead_player_roi.width}x{dead_player_roi.height}+"
+                f"{dead_player_roi.left}+{dead_player_roi.top}"
+            )
         else:
             lines.append(
                 (
@@ -3335,7 +3609,7 @@ def play_alert_sound_pattern(kind: str, volume_percent: int) -> None:
 
 
 def alert_segments_for_kind(kind: str) -> list[tuple[int, int]]:
-    if kind == "captcha":
+    if kind in {"captcha", "dead_player"}:
         return [(1300, 450), (1600, 450)]
     if kind == "watchdog":
         return [(1800, 250), (900, 250)] * 3
@@ -3397,7 +3671,7 @@ def export_alert_wavs(config: dict[str, Any], output_dir: str) -> int:
             read_alert_volume_percent(config, kind="minimap_red"),
         }
     )
-    for kind in ("captcha", "minimap_red", "watchdog"):
+    for kind in ("captcha", "dead_player", "minimap_red", "watchdog"):
         for volume in volumes:
             wav_path = output_path / f"{kind}_{volume}pct.wav"
             wav_path.write_bytes(synthesize_alert_wav_bytes(kind, volume))
@@ -3430,8 +3704,10 @@ def write_heartbeat(
         "runtime_scale": config.get("_runtime_scale", {}),
         "alert_status": alert_status or {
             "lie_last_seen_epoch": None,
+            "dead_last_seen_epoch": None,
             "player_last_seen_epoch": None,
             "lie_active": False,
+            "dead_active": False,
             "player_present": False,
             "player_alerting": False,
             "active_alert": None,
@@ -3472,13 +3748,22 @@ def play_watchdog_sound(config: dict[str, Any] | None = None) -> None:
         pass
 
 
-def watchdog_alert(config: dict[str, Any], logger: logging.Logger, message: str) -> None:
+def watchdog_alert(
+    config: dict[str, Any],
+    logger: logging.Logger,
+    message: str,
+    *,
+    send_remote: bool = True,
+) -> None:
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     full_message = f"[{stamp}] Maple Alert watchdog: {message}"
     print(full_message, flush=True)
     logger.error(full_message)
     play_watchdog_sound(config)
-    send_remote_notifications(config, logger, full_message)
+    if send_remote:
+        send_remote_notifications(config, logger, full_message)
+    else:
+        logger.info("Remote watchdog alert suppressed for ongoing or silenced health instance")
 
 
 def watchdog_notice(logger: logging.Logger, message: str) -> None:
@@ -3506,8 +3791,11 @@ def maybe_watchdog_health_alarm(
     title = watchdog_health_title(snapshot)
     if title:
         message = f"{message}; {title}"
-    watchdog_alert(config, logger, message)
-    tracker.mark_sounded(now)
+    send_remote = tracker.should_send_remote(snapshot)
+    watchdog_alert(config, logger, message, send_remote=send_remote)
+    if send_remote:
+        tracker.mark_remote_sent()
+    tracker.mark_sounded(snapshot, now=now)
     return True
 
 
@@ -3551,6 +3839,7 @@ def run_watchdog(config: dict[str, Any], config_path: Path) -> int:
     stale_seconds = max(2.0, float(watchdog_cfg["stale_seconds"]))
     restart_delay = max(0.0, float(watchdog_cfg["restart_delay_seconds"]))
     startup_grace = max(1.0, float(watchdog_cfg["startup_grace_seconds"]))
+    sleep_silence_seconds = max(60.0, float(watchdog_cfg.get("sleep_silence_seconds", 3600)))
     parent_pid = configured_parent_pid(config)
     command = child_monitor_command(config_path, os.getpid())
 
@@ -3585,6 +3874,7 @@ def run_watchdog(config: dict[str, Any], config_path: Path) -> int:
 
             child = subprocess.Popen(command, cwd=str(config_path.parent))
             child_started = time.monotonic()
+            last_check_wall = time.time()
             logger.info("Started monitor child pid=%s", child.pid)
             health = failure_tracker.update(
                 monitor_heartbeat_available(heartbeat_path, stale_seconds)
@@ -3604,6 +3894,18 @@ def run_watchdog(config: dict[str, Any], config_path: Path) -> int:
                     return 0
 
                 time.sleep(check_interval)
+                now_wall = time.time()
+                if now_wall - last_check_wall > sleep_silence_seconds:
+                    if not failure_tracker.alerts_silenced_until_healthy:
+                        failure_tracker.suppress_alerts_until_healthy("long sleep or wake gap")
+                        watchdog_notice(
+                            logger,
+                            (
+                                f"long sleep/wake gap detected ({now_wall - last_check_wall:.1f}s); "
+                                "watchdog audio and remote alerts are silenced until monitor heartbeat recovers"
+                            ),
+                        )
+                    last_check_wall = now_wall
                 monitor_available = monitor_heartbeat_available(heartbeat_path, stale_seconds)
                 health = failure_tracker.update(monitor_available)
                 write_watchdog_heartbeat(config, child.pid, restart_count, "watching", health)
@@ -3645,6 +3947,15 @@ def run_watchdog(config: dict[str, Any], config_path: Path) -> int:
                 if heartbeat_path.exists():
                     heartbeat_age = time.time() - heartbeat_path.stat().st_mtime
                     if heartbeat_age > stale_seconds:
+                        if heartbeat_age > sleep_silence_seconds and not failure_tracker.alerts_silenced_until_healthy:
+                            failure_tracker.suppress_alerts_until_healthy("monitor heartbeat stale over sleep threshold")
+                            watchdog_notice(
+                                logger,
+                                (
+                                    f"monitor heartbeat is stale over sleep threshold ({heartbeat_age:.1f}s old); "
+                                    "watchdog audio and remote alerts are silenced until monitor heartbeat recovers"
+                                ),
+                            )
                         restart_count += 1
                         failure_tracker.record_abnormal("monitor_stale")
                         health = failure_tracker.update(False)
@@ -3755,7 +4066,8 @@ def run_overlay(config: dict[str, Any]) -> int:
     parent_pid = configured_parent_pid(config)
     volume_max = ALERT_VOLUME_MAX_PERCENT
     volume_warn = 25
-    system_volume_check_ms = 1000
+    pixel_poll_ms = int(round(capture_interval_seconds(config) * 1000.0))
+    system_volume_check_ms = max(1000, pixel_poll_ms)
     layout = overlay_control_layout()
     full_height = int(layout["full_height"])
     collapsed_height = int(layout["collapsed_height"])
@@ -4095,7 +4407,7 @@ def run_overlay(config: dict[str, Any]) -> int:
         dialog.bind("<Return>", lambda _event: "break")
 
         width = 520
-        height = 178
+        height = 198
         screen_w = root.winfo_screenwidth()
         screen_h = root.winfo_screenheight()
         dialog.geometry(f"{width}x{height}+{(screen_w - width) // 2}+{(screen_h - height) // 2}")
@@ -4137,10 +4449,19 @@ def run_overlay(config: dict[str, Any]) -> int:
                 "to suppress future warnings."
             ),
         )
-        button = canvas_prompt.create_rectangle(218, 128, 302, 154, fill="#1b2430", outline="#3b4654")
+        canvas_prompt.create_text(
+            width // 2,
+            122,
+            anchor="center",
+            fill="#ffd43b",
+            font=("Consolas", 9, "bold"),
+            justify="center",
+            text="This warning will reoccur in 3 minutes.",
+        )
+        button = canvas_prompt.create_rectangle(218, 148, 302, 174, fill="#1b2430", outline="#3b4654")
         button_label = canvas_prompt.create_text(
             260,
-            141,
+            161,
             anchor="center",
             fill="#d7fbe1",
             font=("Consolas", 9, "bold"),
@@ -4589,6 +4910,10 @@ def run_overlay(config: dict[str, Any]) -> int:
     def active_alert_label(active_alert: str | None) -> str:
         if active_alert == "lie_detector":
             return "LIE DETECTOR ALERT"
+        if active_alert == "player_dead":
+            return "PLAYER DEAD ALERT"
+        if active_alert == "player_dead_exit":
+            return "PLAYER DEATH EXIT"
         if active_alert == "player_detected":
             return "PLAYER DETECTED ALERT"
         if active_alert == "free_market_exit":
@@ -4789,12 +5114,15 @@ def run_test_image(config: dict[str, Any], args: argparse.Namespace) -> int:
     scale_info = set_runtime_scale(config, base_rect)
     captcha_rect = roi_to_rect(base_rect, config["roi"]["captcha"])
     minimap_rect = roi_to_rect(base_rect, config["roi"]["minimap"])
+    dead_player_rect = roi_to_rect(base_rect, config["roi"]["dead_player"])
 
     captcha_bgr = crop_bgr(image, captcha_rect)
     minimap_bgr = crop_bgr(image, minimap_rect)
+    dead_player_bgr = crop_bgr(image, dead_player_rect)
     captcha_result = detector.detect(captcha_bgr)
     minimap_result, minimap_mask = detect_minimap_red(minimap_bgr, config)
     free_market_result = detect_free_market_title(minimap_bgr, config)
+    dead_player_result = detect_dead_player(dead_player_bgr, config)
     lower_name = image_path.name.casefold()
     expected_captcha: bool | None = None
     if "noncaptcha" in lower_name:
@@ -4818,6 +5146,7 @@ def run_test_image(config: dict[str, Any], args: argparse.Namespace) -> int:
                 "runtime_scale": scale_info.to_dict(),
                 "captcha_roi": captcha_rect.__dict__,
                 "minimap_roi": minimap_rect.__dict__,
+                "dead_player_roi": dead_player_rect.__dict__,
                 "captcha": {
                     "detected": captcha_result.detected,
                     "confidence": round(captcha_result.confidence, 4),
@@ -4832,6 +5161,11 @@ def run_test_image(config: dict[str, Any], args: argparse.Namespace) -> int:
                     "detected": free_market_result.detected,
                     "confidence": round(free_market_result.confidence, 4),
                     "info": free_market_result.info,
+                },
+                "dead_player": {
+                    "detected": dead_player_result.detected,
+                    "confidence": round(dead_player_result.confidence, 4),
+                    "info": dead_player_result.info,
                 },
                 "debug_crops": str(resolve_config_path(config, config["debug"]["crop_dir"])),
                 "blue_block_crop": str(blue_block_crop_path) if blue_block_crop_path else None,
@@ -4874,7 +5208,9 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
     detector = CaptchaDetector(config, logger)
     alerts = AlertManager(config, logger)
     free_market_exit = FreeMarketExitController(config)
+    dead_player_exit = DeadPlayerExitController(config)
     free_market_prompt: FreeMarketExitPrompt | None = None
+    dead_player_prompt: FreeMarketExitPrompt | None = None
     blue_block_crop_saver = make_blue_block_crop_saver(config, logger)
     red_dot_crop_saver = make_red_dot_crop_saver(config, logger)
 
@@ -5001,15 +5337,19 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
 
             captcha_rect = roi_to_rect(base_rect, config["roi"]["captcha"])
             minimap_rect = roi_to_rect(base_rect, config["roi"]["minimap"])
+            dead_player_rect = roi_to_rect(base_rect, config["roi"]["dead_player"])
 
             captcha_bgr = grab_bgr(sct, captcha_rect)
             minimap_bgr = grab_bgr(sct, minimap_rect)
+            dead_player_bgr = grab_bgr(sct, dead_player_rect)
 
             captcha_result = detector.detect(captcha_bgr)
             minimap_result, minimap_mask = detect_minimap_red(minimap_bgr, config)
             free_market_result = detect_free_market_title(minimap_bgr, config)
+            dead_player_result = detect_dead_player(dead_player_bgr, config)
 
             captcha_alert_fired = alerts.handle_result("captcha", captcha_result)
+            alerts.handle_result("dead_player", dead_player_result)
             minimap_alert_fired = alerts.handle_result("minimap_red", minimap_result)
             free_market_test_requested = consume_free_market_exit_test(config, started_at_epoch)
             if free_market_test_requested:
@@ -5025,6 +5365,17 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
                     f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Maple detection: Free Market exit cancelled.",
                     flush=True,
                 )
+            elif free_market_prompt and free_market_prompt.is_closed() and free_market_exit.state != "prompting":
+                free_market_prompt = None
+            if dead_player_prompt and dead_player_prompt.consume_cancelled():
+                dead_player_exit.cancel()
+                logger.info("Player death exit prompt cancelled by user")
+                print(
+                    f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Maple detection: Player death exit cancelled.",
+                    flush=True,
+                )
+            elif dead_player_prompt and dead_player_prompt.is_closed() and dead_player_exit.state != "prompting":
+                dead_player_prompt = None
 
             target_pid = current_target.pid if current_target and current_target.pid else None
             exit_decision = free_market_exit.update(
@@ -5039,6 +5390,10 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
                     f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Maple detection: Free Market exit countdown started.",
                     flush=True,
                 )
+                if dead_player_prompt is not None:
+                    dead_player_prompt.close()
+                    dead_player_prompt = None
+                    dead_player_exit.reset()
                 if free_market_prompt is not None:
                     free_market_prompt.close()
                 prompt_opacity = float(config.get("overlay", {}).get("opacity", 0.86))
@@ -5064,8 +5419,16 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
                             f"Maple alert: POSSIBLE MISSED CAPTCHA. Safeguard: Closed msw.exe pid={pid_to_close}."
                         )
                     )
-                    if free_market_prompt is not None:
+                    if free_market_prompt is not None and not free_market_prompt.is_closed():
                         free_market_prompt.show_force_closed_message()
+                    else:
+                        prompt_opacity = float(config.get("overlay", {}).get("opacity", 0.86))
+                        free_market_prompt = FreeMarketExitPrompt(
+                            1,
+                            opacity=prompt_opacity,
+                            initial_mode="closed",
+                        )
+                        free_market_prompt.start()
                     free_market_exit.reset()
                 else:
                     message = f"FAILED TO EXIT MSW.EXE! {detail}"
@@ -5081,7 +5444,96 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
                         play_alert_sound_pattern("captcha", read_alert_volume_percent(config, kind="captcha"))
                     except Exception as exc:
                         logger.warning("Could not play exit-failure alert sound: %s", exc)
-                    send_remote_notifications(config, logger, f"Maple alert: {message}")
+                    if not alerts.remote_sent_for("captcha"):
+                        send_remote_notifications(config, logger, f"Maple alert: {message}")
+                        alerts.mark_remote_sent("captcha")
+                    else:
+                        logger.info("Remote exit-failure alert suppressed for ongoing captcha/free-market instance")
+            if free_market_prompt is None and (
+                dead_player_prompt is None or dead_player_exit.state == "prompting"
+            ):
+                dead_exit_decision = dead_player_exit.update(dead_player_result, target_pid=target_pid)
+            else:
+                dead_exit_decision = ExitDecision()
+            if dead_exit_decision.action == "show_prompt":
+                logger.warning("Player death exit countdown prompt started")
+                print(
+                    f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Maple detection: Player death exit countdown started.",
+                    flush=True,
+                )
+                if dead_player_prompt is not None:
+                    dead_player_prompt.close()
+                prompt_opacity = float(config.get("overlay", {}).get("opacity", 0.86))
+                dead_player_prompt = FreeMarketExitPrompt(
+                    int(dead_player_exit.countdown_seconds),
+                    opacity=prompt_opacity,
+                    title="SAFEGUARD",
+                    message=(
+                        "Player death detected.\n"
+                        "Safeguard: exiting the game in"
+                    ),
+                    force_closed_message=DEAD_PLAYER_FORCE_CLOSED_MESSAGE,
+                    failure_warning=DEAD_PLAYER_EXIT_FAILED_WARNING,
+                    countdown_formatter=format_minutes_seconds_countdown,
+                    thread_name="dead-player-exit-prompt",
+                )
+                dead_player_prompt.start()
+            elif dead_exit_decision.action in {"dismiss_prompt", "reset"}:
+                if dead_player_prompt is not None:
+                    dead_player_prompt.close()
+                    dead_player_prompt = None
+                if dead_exit_decision.action == "reset":
+                    logger.info("Player death exit state reset after clear interval")
+            elif dead_exit_decision.action == "exit":
+                pid_to_close = dead_player_exit.target_pid or target_pid
+                ok, detail = terminate_process_tree(int(pid_to_close or 0))
+                if ok:
+                    logger.warning("Player death safeguard closed msw.exe pid=%s", pid_to_close)
+                    print_red_line(
+                        (
+                            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+                            f"Maple alert: PLAYER DEATH SAFEGUARD. Safeguard: Closed msw.exe pid={pid_to_close}."
+                        )
+                    )
+                    if dead_player_prompt is not None and not dead_player_prompt.is_closed():
+                        dead_player_prompt.show_force_closed_message()
+                    else:
+                        prompt_opacity = float(config.get("overlay", {}).get("opacity", 0.86))
+                        dead_player_prompt = FreeMarketExitPrompt(
+                            1,
+                            opacity=prompt_opacity,
+                            title="SAFEGUARD",
+                            message=(
+                                "Player death detected.\n"
+                                "Safeguard: exiting the game in"
+                            ),
+                            force_closed_message=DEAD_PLAYER_FORCE_CLOSED_MESSAGE,
+                            failure_warning=DEAD_PLAYER_EXIT_FAILED_WARNING,
+                            countdown_formatter=format_minutes_seconds_countdown,
+                            thread_name="dead-player-exit-prompt",
+                            initial_mode="closed",
+                        )
+                        dead_player_prompt.start()
+                    dead_player_exit.reset()
+                else:
+                    message = f"FAILED TO EXIT MSW.EXE! {detail}"
+                    dead_player_exit.report_failure(message)
+                    logger.error(message)
+                    print(
+                        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Maple alert: {message}",
+                        flush=True,
+                    )
+                    if dead_player_prompt is not None:
+                        dead_player_prompt.show_exit_failed_warning()
+                    try:
+                        play_alert_sound_pattern("captcha", read_alert_volume_percent(config, kind="captcha"))
+                    except Exception as exc:
+                        logger.warning("Could not play player-death exit-failure alert sound: %s", exc)
+                    if not alerts.remote_sent_for("dead_player"):
+                        send_remote_notifications(config, logger, f"Maple alert: {message}")
+                        alerts.mark_remote_sent("dead_player")
+                    else:
+                        logger.info("Remote exit-failure alert suppressed for ongoing player-death instance")
             if captcha_alert_fired:
                 blue_block_crop_saver.save(
                     captcha_bgr,
@@ -5117,19 +5569,28 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
                 if free_market_exit.failure_active():
                     alert_status["active_alert"] = "exit_failed"
                     alert_status["exit_failure_message"] = free_market_exit.failure_message
+                elif dead_player_exit.failure_active():
+                    alert_status["active_alert"] = "exit_failed"
+                    alert_status["exit_failure_message"] = dead_player_exit.failure_message
                 elif free_market_exit.state == "prompting":
                     alert_status["active_alert"] = "free_market_exit"
+                elif dead_player_exit.state == "prompting":
+                    alert_status["active_alert"] = "player_dead_exit"
                 write_heartbeat(config, base_source, base_rect, alert_status, current_target)
                 last_heartbeat = loop_start
 
             if config["debug"]["save_crops"] and (
                 captcha_result.detected
+                or dead_player_result.detected
                 or minimap_result.detected
                 or free_market_result.detected
                 or args.once
             ):
                 suffix = "detected" if (
-                    captcha_result.detected or minimap_result.detected or free_market_result.detected
+                    captcha_result.detected
+                    or dead_player_result.detected
+                    or minimap_result.detected
+                    or free_market_result.detected
                 ) else "sample"
                 save_debug_crops(config, captcha_bgr, minimap_bgr, minimap_mask, suffix)
 
@@ -5167,6 +5628,11 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
                                 "confidence": round(free_market_result.confidence, 4),
                                 "info": free_market_result.info,
                             },
+                            "dead_player": {
+                                "detected": dead_player_result.detected,
+                                "confidence": round(dead_player_result.confidence, 4),
+                                "info": dead_player_result.info,
+                            },
                         },
                         indent=2,
                     )
@@ -5182,7 +5648,7 @@ def run(config: dict[str, Any], args: argparse.Namespace) -> int:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Local visual alert monitor for CAPTCHA and minimap red markers."
+        description="Local visual alert monitor for lie prompts, dead prompts, and minimap red markers."
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {APP_VERSION}")
     parser.add_argument("--config", default="config.toml", help="Path to config TOML file.")

@@ -25,6 +25,7 @@ def read_peak_and_duration(wav_bytes: bytes) -> tuple[int, float]:
 
 def test_captcha_wav_matches_beep_durations() -> None:
     assert alert_segments_for_kind("captcha") == [(1300, 450), (1600, 450)]
+    assert alert_segments_for_kind("dead_player") == alert_segments_for_kind("captcha")
     peak, duration = read_peak_and_duration(synthesize_alert_wav_bytes("captcha", 100))
     assert 0.88 <= duration <= 0.92
     assert peak == volume_to_pcm_amplitude(100)

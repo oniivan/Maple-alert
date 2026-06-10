@@ -18,7 +18,7 @@ $files = @("_source\maple_alert.py", "_source\vision_core.py") +
 ```
 
 `run_fast_tests.py` runs every `_source\tools\test_*.py` script except the
-two screenshot-fixture detector checks. The runner is intentionally based on
+three screenshot-fixture detector checks. The runner is intentionally based on
 plain Python script execution so the portable repo can be verified without
 installing pytest.
 
@@ -33,6 +33,7 @@ fixtures are private and are not part of the repo:
 ```powershell
 .\.venv\Scripts\python.exe _source\tools\test_captcha_patch_images.py C:\path\to\screenshot-fixtures
 .\.venv\Scripts\python.exe _source\tools\test_minimap_red_images.py C:\path\to\screenshot-fixtures
+.\.venv\Scripts\python.exe _source\tools\test_dead_player_images.py
 ```
 
 Run them before changing detector thresholds, ROI math, color filtering, or

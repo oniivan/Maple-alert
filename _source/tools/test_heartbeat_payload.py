@@ -55,8 +55,9 @@ def test_watchdog_heartbeat_includes_monitor_health() -> None:
 
         health = {
             "active": True,
-            "title": "MONITOR CRASHED 3 TIMES IN 5 MINS",
-            "crash_count_window": 3,
+            "title": "MONITOR CRASHED 5 TIMES IN 5 MINS",
+            "crash_count_window": 5,
+            "display_crash_count": 5,
         }
         write_watchdog_heartbeat(config, child_pid=123, restart_count=3, status="monitor_exited", monitor_health=health)
         payload = json.loads((Path(temp_dir) / "runtime" / "watchdog_heartbeat.json").read_text())

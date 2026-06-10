@@ -51,6 +51,7 @@ def test_lie_and_player_volumes_are_persisted_separately() -> None:
         assert payload["lie_detect_volume_percent"] == 225
         assert payload["player_detected_volume_percent"] == 75
         assert read_alert_volume_percent(config, kind="captcha") == 225
+        assert read_alert_volume_percent(config, kind="dead_player") == 225
         assert read_alert_volume_percent(config, kind="minimap_red") == 75
 
 
@@ -66,6 +67,7 @@ def test_legacy_alert_volume_falls_back_for_both_alerts() -> None:
         )
 
         assert read_alert_volume_percent(config, kind="captcha") == 165
+        assert read_alert_volume_percent(config, kind="dead_player") == 165
         assert read_alert_volume_percent(config, kind="minimap_red") == 165
 
 

@@ -20,6 +20,28 @@ def test_supervisor_script_uses_clear_watchdog_restart_wording() -> None:
     assert "watchdog failures in" in text
 
 
+def test_supervisor_script_uses_five_crash_threshold_and_resets_after_alert() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+
+    assert 'crash_alert_count" -Default 5.0' in text
+    assert "$script:SupervisorEvents = New-Object System.Collections.ArrayList" in text
+    assert "$SupervisorLatchedCrashCount = 0" in text
+    assert "display_crash_count = $DisplayCrashCount" in text
+    assert "$WatchdogRealertSeconds = [Math]::Max(60.0" in text
+
+
+def test_supervisor_script_silences_alerts_after_long_sleep_gap() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+
+    assert 'sleep_silence_seconds" -Default 3600.0' in text
+    assert "Silence-SupervisorAlertsUntilHealthy" in text
+    assert "SupervisorAlertsSilencedUntilHealthy" in text
+    assert "Long sleep/wake gap detected" in text
+    assert "Watchdog heartbeat is stale over sleep threshold" in text
+    assert "watchdog down over sleep threshold" in text
+    assert "$DownSeconds -ge $SleepSilenceSeconds" in text
+
+
 def test_supervisor_script_preserves_failure_diagnostics() -> None:
     text = SCRIPT.read_text(encoding="utf-8")
 
@@ -52,6 +74,8 @@ def test_supervisor_script_parses_as_powershell() -> None:
 
 if __name__ == "__main__":
     test_supervisor_script_uses_clear_watchdog_restart_wording()
+    test_supervisor_script_uses_five_crash_threshold_and_resets_after_alert()
+    test_supervisor_script_silences_alerts_after_long_sleep_gap()
     test_supervisor_script_preserves_failure_diagnostics()
     test_supervisor_script_parses_as_powershell()
     print("supervisor script tests passed")

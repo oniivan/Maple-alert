@@ -9,9 +9,9 @@ Keep the black command window open while monitoring. Closing it or pressing
 Ctrl+C stops the alert system and overlay.
 
 A small "LIVE" overlay should appear. Drag it with the mouse if it covers
-something. The moving spinner means the overlay itself is alive. LIE and PLAYER
-only appear after detection, then show how many minutes ago each signal was last
-seen. Click the small - at the top-right to collapse the drawer to the main
+something. The moving spinner means the overlay itself is alive. LIE appears
+after a lie detection; PLAYER appears only after the minimap player alert
+actually fires. Click the small - at the top-right to collapse the drawer to the main
 status bar; it changes to v while collapsed. Click the small X at the top-right
 of the overlay to quit the whole alert stack.
 
@@ -20,17 +20,27 @@ DETECT VOLUME filled meters. Click TEST to play the lie alert first, then the
 player alert. Click/drag either meter to adjust that WAV volume up to 300%.
 Click DM on the top bar to add Telegram, Discord, or Pushover remote alert details and
 send a test message.
+Remote alerts are sent once per active alert instance. Continued local sound
+repeats do not resend Telegram, Discord, or Pushover until that detection clears
+and starts again.
 If the top bar flashes yellow for system volume, Windows is muted or below 30%.
 The IGNORE button appears only while that warning is active. Click it to suppress
 the current warning; a flashing WARN button remains while that warning is ignored.
-A warning prompt appears if system volume stays muted or below 30% for 3 minutes,
-and configured DMs are sent at the same time.
+A warning prompt appears if system volume stays muted or below 30% for 3 minutes.
+If you close it while volume is still low, it returns 3 minutes after close.
+Configured DMs are sent when the prompt appears.
 If the top bar flashes red with MAPLE NOT DETECTED, the game window was
 not found and monitor fallback is active. Starting Maple later is okay; it
 keeps checking and will switch when the window appears.
-If the top bar flashes red with MONITOR CRASHED or MONITOR DOWN, the monitor
-has been crashing repeatedly or has been unavailable long enough to matter.
+If the top bar flashes red with ERROR: MAPLEALERT CRASHED X TIMES and
+SEE ERROR IN TERMINAL, the monitor/watchdog has been unhealthy long enough to
+matter.
+After a long sleep/wake gap of 1 hour or more, watchdog audio and remote
+health alerts stay quiet until the monitor heartbeat recovers.
 If the volume section turns red, the app's alert intensity is below 25%.
+Dead prompt alerts use the LIE DETECT VOLUME meter and start a 3-minute
+safeguard exit countdown. If the safeguard exits the game, a prompt remains
+onscreen explaining why.
 Player alerts start after the configured persistence delay, then repeat about
 every 15 seconds while the marker remains present.
 

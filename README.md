@@ -11,6 +11,8 @@ Keep the black command window open while monitoring. Closing it stops the alert 
 ## What It Does
 
 - Lie detector visual alerts
+- Dead prompt visual alerts
+- Dead prompt 3-minute safeguard exit prompt
 - Minimap red-dot alerts with 20s persistence and 15s repeat while present
 - Low-CPU screen polling
 - Always-on-top status overlay
@@ -19,6 +21,7 @@ Keep the black command window open while monitoring. Closing it stops the alert 
 - Free Market safeguard prompt after a possible missed lie detection
 - Setup check and redacted diagnostics bundle
 - Optional Telegram, Discord, and Pushover alerts
+- Remote alerts are deduped to one message per active alert instance
 
 This detects visual events and alerts the user.
 
@@ -54,3 +57,7 @@ send a test. Telegram needs a bot token plus chat ID, and the user must start
 the bot first. Discord DMs need a bot token plus numeric user ID; webhooks are
 also supported. Pushover needs an app token plus user key and uses a one-shot
 emergency profile for alerts.
+
+Remote alerts are sent once per active alert instance. Local sounds may repeat
+while a condition remains true, but Telegram, Discord, and Pushover are not
+resent until that condition clears and starts again.

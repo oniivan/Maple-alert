@@ -8,6 +8,7 @@ runtime/
 config.local.toml
 *.local.toml
 diagnostics/
+screenshots/
 build/
 dist/
 docs/goals/

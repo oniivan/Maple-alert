@@ -19,6 +19,8 @@ def test_repo_root_is_runnable_one_click_layout() -> None:
 
     assert (ROOT / "_internal" / "watchdog_supervisor.ps1").is_file()
     assert (ROOT / "alert_sounds" / "captcha_100pct.wav").is_file()
+    assert (ROOT / "alert_sounds" / "dead_player_100pct.wav").is_file()
+    assert (ROOT / "templates" / "dead_main_prompt.png").is_file()
     assert (ROOT / "templates" / "free_market_title.png").is_file()
     assert (ROOT / "_source" / "maple_alert.py").is_file()
     assert (ROOT / "_debug_tools" / "Calibrate Maple Alert.bat").is_file()

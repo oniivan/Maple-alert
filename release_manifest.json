@@ -1,8 +1,8 @@
 {
     "app_name":  "Maple Alert",
     "app_version":  "0.4.0",
-    "built_at_utc":  "2026-06-04T10:30:02.8210943Z",
-    "source_commit":  "7833e9751f08198ae24f6b18768bd0622b7cf82e",
+    "built_at_utc":  "2026-06-10T07:24:44.4948064Z",
+    "source_commit":  "b4fe4810bcf4de9cf434b168a9fb8d2733e8bc7f",
     "source_dirty":  true,
     "python":  "Python 3.14.5",
     "pyinstaller":  "6.20.0",
@@ -14,23 +14,28 @@
                   },
                   {
                       "path":  "MapleAlert.exe",
-                      "bytes":  7162464,
-                      "sha256":  "0A05D43E1A82F16348A427E4CF63271B181CAF33E705A44D74D428DCF11F436C"
+                      "bytes":  7172522,
+                      "sha256":  "EA4E5B697F26225F12414E6104AC3E6FDB6D016B37DA16B5E8E338C7121CA605"
                   },
                   {
                       "path":  "config.toml",
-                      "bytes":  6990,
-                      "sha256":  "332E2CA771D42FD68DB80A0A2A29B37854B0997069071243D90E7BB8C1E7C8CC"
+                      "bytes":  7810,
+                      "sha256":  "FFB5D85E5020481DE8F078BA125915640D439229A70DE76CECB8DC600E4F1EA9"
                   },
                   {
                       "path":  "README.md",
-                      "bytes":  2088,
-                      "sha256":  "C0928FA88300E8A5DB1EDD05052AD9CBD1394DE445BFDC732B4F1F383129808E"
+                      "bytes":  2439,
+                      "sha256":  "D19BD5287E802C43C7955420E6956F8D9D667E9B2A5BBECEE1D3928FCF2C35B3"
                   },
                   {
                       "path":  "README_FIRST.txt",
-                      "bytes":  2636,
-                      "sha256":  "3EC1453742D7CC7E18FA3068B4FE881B7522D6A086B5E4750C7346AFD8BC5405"
+                      "bytes":  3204,
+                      "sha256":  "28268EE3BF06EDBB275392AA13D8C0DAD6B61E000621E9B20FFEB9EEC41D14EE"
+                  },
+                  {
+                      "path":  "templates/dead_main_prompt.png",
+                      "bytes":  67779,
+                      "sha256":  "5959A45D3C9BE5FA34DC9D3A26FB9D0F5E027B106EB96A5C6FA2D0A1FE557EFF"
                   },
                   {
                       "path":  "templates/free_market_title.png",
@@ -39,8 +44,8 @@
                   },
                   {
                       "path":  "_internal/watchdog_supervisor.ps1",
-                      "bytes":  27651,
-                      "sha256":  "B7CD96E21DB1E2AEA1253F69C48C0AB598E7B9ECEDEE72E1F262CA75D5CA1D07"
+                      "bytes":  30261,
+                      "sha256":  "977C35FBEC3107F0B4E5529CFA6D6D0065CB24EC7242D527657FF76CE03B71DC"
                   },
                   {
                       "path":  "alert_sounds/captcha_100pct.wav",
@@ -74,6 +79,41 @@
                   },
                   {
                       "path":  "alert_sounds/captcha_75pct.wav",
+                      "bytes":  79424,
+                      "sha256":  "E91891FCE5F8777003EEA8C42BF8200379FE8C806E6EFF551588E0396A2B46B8"
+                  },
+                  {
+                      "path":  "alert_sounds/dead_player_100pct.wav",
+                      "bytes":  79424,
+                      "sha256":  "7B0B57336E75430A231959800159B42EEC1EC0D27CF7471A27CE8FB01BA757A1"
+                  },
+                  {
+                      "path":  "alert_sounds/dead_player_200pct.wav",
+                      "bytes":  79424,
+                      "sha256":  "75DD6F47548AF61E89B85A7295B35BA683F6F0641CB5CEB6B7785C84BF89D174"
+                  },
+                  {
+                      "path":  "alert_sounds/dead_player_250pct.wav",
+                      "bytes":  79424,
+                      "sha256":  "69E6047446433540D68BE02544EFD481134AC9A21F0290C092D4ED6C9FBDBA49"
+                  },
+                  {
+                      "path":  "alert_sounds/dead_player_25pct.wav",
+                      "bytes":  79424,
+                      "sha256":  "2D86BEF1699F0DAEB8490E670002C48FFF6BBC6824CFE15635CE7FD412EF2BEE"
+                  },
+                  {
+                      "path":  "alert_sounds/dead_player_300pct.wav",
+                      "bytes":  79424,
+                      "sha256":  "CC176616DADE42B8E681131C645F35AEDF4B25BD8F7E8578E164940B9D006D87"
+                  },
+                  {
+                      "path":  "alert_sounds/dead_player_45pct.wav",
+                      "bytes":  79424,
+                      "sha256":  "CC65476A2CD3EDBBF3EEC3C9FE74B9004799B615A05B51EF514E9C701948B340"
+                  },
+                  {
+                      "path":  "alert_sounds/dead_player_75pct.wav",
                       "bytes":  79424,
                       "sha256":  "E91891FCE5F8777003EEA8C42BF8200379FE8C806E6EFF551588E0396A2B46B8"
                   },

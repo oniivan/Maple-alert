@@ -42,7 +42,7 @@ def test_lie_last_seen_persists_after_clear() -> None:
         assert cleared["active_alert"] is None
 
 
-def test_player_last_seen_updates_before_alert_threshold() -> None:
+def test_player_last_seen_waits_for_actual_alert_threshold() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         manager = AlertManager(
             make_config(temp_dir, required_seconds=999),
@@ -52,8 +52,22 @@ def test_player_last_seen_updates_before_alert_threshold() -> None:
         manager.handle_result("minimap_red", DetectionResult(True, 1.0, {"red_pixels": 60}))
         snapshot = manager.status_snapshot()
 
-        assert snapshot["player_last_seen_epoch"] is not None
+        assert snapshot["player_last_seen_epoch"] is None
         assert snapshot["active_alert"] is None
+
+
+def test_player_last_seen_updates_when_player_alert_fires() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        manager = AlertManager(
+            make_config(temp_dir, required_seconds=0),
+            logging.getLogger("test_player_alert_status"),
+        )
+
+        manager.handle_result("minimap_red", DetectionResult(True, 1.0, {"red_pixels": 60}))
+        snapshot = manager.status_snapshot()
+
+        assert snapshot["player_last_seen_epoch"] is not None
+        assert snapshot["active_alert"] == "player_detected"
 
 
 def test_last_seen_minutes_format() -> None:
@@ -84,7 +98,8 @@ def test_overlay_live_status_only_shows_seen_signals() -> None:
 
 if __name__ == "__main__":
     test_lie_last_seen_persists_after_clear()
-    test_player_last_seen_updates_before_alert_threshold()
+    test_player_last_seen_waits_for_actual_alert_threshold()
+    test_player_last_seen_updates_when_player_alert_fires()
     test_last_seen_minutes_format()
     test_overlay_live_status_only_shows_seen_signals()
     print("alert status payload tests passed")

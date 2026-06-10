@@ -164,10 +164,11 @@ $StartupGraceSeconds = [Math]::Max(1.0, (Get-TomlNumber -Path $Config -Section "
 $StaleSeconds = [Math]::Max(2.0, (Get-TomlNumber -Path $Config -Section "watchdog" -Key "stale_seconds" -Default 30.0))
 $RestartDelaySeconds = [Math]::Max(0.0, (Get-TomlNumber -Path $Config -Section "watchdog" -Key "restart_delay_seconds" -Default 5.0))
 $CrashWindowSeconds = [Math]::Max(30.0, (Get-TomlNumber -Path $Config -Section "watchdog" -Key "crash_window_seconds" -Default 300.0))
-$CrashAlertCount = [Math]::Max(1, [int](Get-TomlNumber -Path $Config -Section "watchdog" -Key "crash_alert_count" -Default 3.0))
+$CrashAlertCount = [Math]::Max(1, [int](Get-TomlNumber -Path $Config -Section "watchdog" -Key "crash_alert_count" -Default 5.0))
 $WatchdogDownAlertSeconds = [Math]::Max(10.0, (Get-TomlNumber -Path $Config -Section "watchdog" -Key "monitor_down_alert_seconds" -Default 120.0))
-$WatchdogRealertSeconds = [Math]::Max(10.0, (Get-TomlNumber -Path $Config -Section "watchdog" -Key "watchdog_realert_seconds" -Default 120.0))
+$WatchdogRealertSeconds = [Math]::Max(60.0, (Get-TomlNumber -Path $Config -Section "watchdog" -Key "watchdog_realert_seconds" -Default 120.0))
 $HealthyClearSeconds = [Math]::Max(10.0, (Get-TomlNumber -Path $Config -Section "watchdog" -Key "healthy_clear_seconds" -Default 600.0))
+$SleepSilenceSeconds = [Math]::Max(60.0, (Get-TomlNumber -Path $Config -Section "watchdog" -Key "sleep_silence_seconds" -Default 3600.0))
 
 $LastMonitorStatusKey = ""
 $LastStdOutPosition = 0
@@ -177,7 +178,10 @@ $SupervisorUnhealthySince = $null
 $SupervisorHealthySince = $null
 $SupervisorLatchedTitle = ""
 $SupervisorLatchedReason = ""
+$SupervisorLatchedCrashCount = 0
 $SupervisorLastSoundAt = $null
+$SupervisorAlertsSilencedUntilHealthy = $false
+$SupervisorSilenceReason = ""
 
 function Get-MinutesLabel {
     param([double]$Seconds)
@@ -304,6 +308,8 @@ function Update-SupervisorHealth {
 
     if ($WatchdogAvailable) {
         $script:SupervisorUnavailableSince = $null
+        $script:SupervisorAlertsSilencedUntilHealthy = $false
+        $script:SupervisorSilenceReason = ""
     } elseif ($null -eq $script:SupervisorUnavailableSince) {
         $script:SupervisorUnavailableSince = $Now
     }
@@ -311,6 +317,9 @@ function Update-SupervisorHealth {
     $DownSeconds = 0.0
     if ($null -ne $script:SupervisorUnavailableSince) {
         $DownSeconds = [Math]::Max(0.0, $Now - [double]$script:SupervisorUnavailableSince)
+    }
+    if ((-not $WatchdogAvailable) -and ($DownSeconds -ge $SleepSilenceSeconds) -and (-not $script:SupervisorAlertsSilencedUntilHealthy)) {
+        Silence-SupervisorAlertsUntilHealthy -Reason "watchdog down over sleep threshold"
     }
 
     $CrashCount = @($Events).Count
@@ -333,6 +342,9 @@ function Update-SupervisorHealth {
         $script:SupervisorHealthySince = $null
         $script:SupervisorLatchedTitle = $RawTitle
         $script:SupervisorLatchedReason = $RawReason
+        if ($RawReason -eq "crash_loop") {
+            $script:SupervisorLatchedCrashCount = $CrashCount
+        }
     } elseif ($null -ne $script:SupervisorUnhealthySince) {
         if ($WatchdogAvailable) {
             if ($null -eq $script:SupervisorHealthySince) {
@@ -343,6 +355,7 @@ function Update-SupervisorHealth {
                 $script:SupervisorHealthySince = $null
                 $script:SupervisorLatchedTitle = ""
                 $script:SupervisorLatchedReason = ""
+                $script:SupervisorLatchedCrashCount = 0
             } else {
                 $Latched = $true
             }
@@ -359,6 +372,10 @@ function Update-SupervisorHealth {
         $Reason = $script:SupervisorLatchedReason
         $Title = $script:SupervisorLatchedTitle
     }
+    $DisplayCrashCount = $CrashCount
+    if (($Reason -eq "crash_loop") -and ($RawReason -ne "crash_loop")) {
+        $DisplayCrashCount = $script:SupervisorLatchedCrashCount
+    }
 
     return [ordered]@{
         active = [bool]$Active
@@ -368,14 +385,24 @@ function Update-SupervisorHealth {
         reason = $Reason
         title = $Title
         crash_count_window = $CrashCount
+        display_crash_count = $DisplayCrashCount
         crash_alert_count = $CrashAlertCount
         window_seconds = $CrashWindowSeconds
         monitor_down_seconds = [Math]::Round($DownSeconds, 1)
         monitor_down_alert_seconds = $WatchdogDownAlertSeconds
         unhealthy_since = $script:SupervisorUnhealthySince
         healthy_since = $script:SupervisorHealthySince
+        alerts_silenced_until_healthy = [bool]$script:SupervisorAlertsSilencedUntilHealthy
+        silence_reason = $script:SupervisorSilenceReason
         recent_events = @($Events | Select-Object -Last 5)
     }
+}
+
+function Silence-SupervisorAlertsUntilHealthy {
+    param([string]$Reason)
+
+    $script:SupervisorAlertsSilencedUntilHealthy = $true
+    $script:SupervisorSilenceReason = $Reason
 }
 
 function Write-SupervisorHeartbeat {
@@ -427,6 +454,9 @@ function Test-SupervisorShouldSound {
     if (-not [bool]$Health.soundable) {
         return $false
     }
+    if ([bool]$Health.alerts_silenced_until_healthy) {
+        return $false
+    }
 
     $Now = Get-EpochSeconds
     if ($null -eq $script:SupervisorLastSoundAt) {
@@ -452,6 +482,9 @@ function Invoke-SupervisorHealthAlarm {
     Write-TimestampedHost ("Maple Alert supervisor: {0}" -f $Message) "Red"
     Invoke-SupervisorBeep
     $script:SupervisorLastSoundAt = Get-EpochSeconds
+    if ([string]$Health.reason -eq "crash_loop") {
+        $script:SupervisorEvents = New-Object System.Collections.ArrayList
+    }
     return $true
 }
 
@@ -718,12 +751,22 @@ try {
 
         $script:LastStdOutPosition = 0
         $StartedAt = Get-Date
+        $LastSupervisorCheck = Get-Date
         $Health = Update-SupervisorHealth -WatchdogAvailable $false
         Write-SupervisorHeartbeat -Watchdog $Watchdog -RestartCount $RestartCount -Status "watchdog_started" -Health $Health
         Write-TimestampedHost ("Started watchdog pid={0}" -f $Watchdog.Id)
 
         while ($true) {
             Start-Sleep -Seconds $CheckIntervalSeconds
+            $NowCheck = Get-Date
+            $CheckGapSeconds = ($NowCheck - $LastSupervisorCheck).TotalSeconds
+            if ($CheckGapSeconds -gt $SleepSilenceSeconds) {
+                if (-not $script:SupervisorAlertsSilencedUntilHealthy) {
+                    Silence-SupervisorAlertsUntilHealthy -Reason "long sleep or wake gap"
+                    Write-TimestampedHost ("Long sleep/wake gap detected ({0:N1}s); watchdog audio is silenced until heartbeat recovers." -f $CheckGapSeconds) "Yellow"
+                }
+            }
+            $LastSupervisorCheck = $NowCheck
             Write-NewWatchdogOutput
             if (Test-QuitRequested) {
                 $QuitRequested = $true
@@ -764,6 +807,10 @@ try {
             $AgeSeconds = Get-WatchdogHeartbeatAge
             if ($null -ne $AgeSeconds) {
                 if ($AgeSeconds -gt $StaleSeconds) {
+                    if (($AgeSeconds -gt $SleepSilenceSeconds) -and (-not $script:SupervisorAlertsSilencedUntilHealthy)) {
+                        Silence-SupervisorAlertsUntilHealthy -Reason "watchdog heartbeat stale over sleep threshold"
+                        Write-TimestampedHost ("Watchdog heartbeat is stale over sleep threshold ({0:N1}s old); watchdog audio is silenced until heartbeat recovers." -f $AgeSeconds) "Yellow"
+                    }
                     $RestartCount += 1
                     Record-SupervisorAbnormal -Reason "watchdog_stale"
                     $Health = Update-SupervisorHealth -WatchdogAvailable $false

@@ -43,6 +43,13 @@ y1 = 0.0
 x2 = 0.2398
 y2 = 0.3893
 
+[roi.dead_player]
+# Center/top prompt area at the 1919x1079 reference resolution.
+x1 = 0.20
+y1 = 0.0
+x2 = 0.80
+y2 = 0.36
+
 [scaling]
 # Test screenshots were 1919x1079. The script compares the live capture size
 # to this reference and scales fixed-pixel detectors automatically.
@@ -124,6 +131,15 @@ scale_steps = 15
 search_width = 560
 search_height = 70
 
+[detection.dead_player]
+# Strict template match for the revival prompt inside the center/top ROI.
+enabled = true
+template_path = "templates/dead_main_prompt.png"
+threshold = 0.88
+scale_min = 0.90
+scale_max = 1.10
+scale_steps = 9
+
 [alerts]
 # Safe mode keeps notifications local: console + sound + log only.
 safe_mode = true
@@ -131,13 +147,15 @@ audible = true
 telegram_enabled = true
 # Legacy fallback for older configs. New alert volume control uses generated WAV amplitude.
 sound_multiplier = 2
-# Overlay-controlled WAV amplitude. 100 is normal; 250 is the max.
+# Overlay-controlled WAV amplitude. 100 is normal; 300 is the max.
 alert_volume_percent = 200
 lie_detect_volume_percent = 200
 player_detected_volume_percent = 200
 alert_settings_file = "runtime/alert_settings.json"
 # Lie detector: alert immediately when visible, then repeat while still visible.
 captcha_repeat_seconds = 30
+# Dead prompt: alert immediately when visible, then repeat while still visible.
+dead_player_repeat_seconds = 30
 # Minimap red: require continuous red presence before the first alert, then repeat while still present.
 minimap_required_seconds = 20
 minimap_repeat_seconds = 15
@@ -152,6 +170,12 @@ trigger_after_captcha_clear_seconds = 20
 reset_after_clear_seconds = 12
 failure_status_seconds = 20
 test_request_file = "runtime/free_market_exit_test.json"
+
+[dead_player_exit]
+enabled = true
+countdown_seconds = 180
+reset_after_clear_seconds = 12
+failure_status_seconds = 20
 
 [telegram]
 # Keep private values out of the tracked config.toml when possible.
@@ -185,6 +209,7 @@ expire_seconds = 30
 
 [notifications]
 # Remote alerts are enabled automatically when Telegram, Discord, or Pushover is enabled.
+# Repeating local sound alerts send only one remote message until that detection clears.
 settings_file = "runtime/notification_settings.json"
 
 [watchdog]
@@ -201,10 +226,13 @@ startup_grace_seconds = 15
 # the watchdog alarm if the monitor is down for 2+ minutes, or if this many
 # monitor failures happen inside the rolling crash window.
 crash_window_seconds = 300
-crash_alert_count = 3
+crash_alert_count = 5
 monitor_down_alert_seconds = 120
 watchdog_realert_seconds = 120
 healthy_clear_seconds = 600
+# If the PC sleeps or is paused long enough that heartbeat age exceeds this,
+# watchdog/supervisor audio and remote alerts stay quiet until health recovers.
+sleep_silence_seconds = 3600
 
 [overlay]
 enabled = true

@@ -32,8 +32,9 @@ This implementation uses ordinary Windows screen capture and optional window-tit
 - Alert timing is stateful:
   - CAPTCHA: alerts immediately when visible, then repeats every 30 seconds while still visible.
   - Minimap red: waits until red has been continuously visible for 20 seconds, alerts once, then repeats every 15 seconds while still visible. If red disappears, the 20-second timer resets.
+  - Remote alerts are sent once per active CAPTCHA, dead-player, or minimap-player instance. Continued local sound repeats do not resend Telegram, Discord, or Pushover until the detection clears and starts again.
 - The sound is generated as WAV audio using the same alert frequencies/durations that the old `winsound.Beep()` version used. The overlay has separate `LIE DETECT VOLUME` and `PLAYER DETECT VOLUME` meters; each controls the real WAV amplitude for that alert type. Meters range from `0%` to `300%`; Windows master volume still applies.
-- The overlay also checks Windows master output volume. If the system is muted or below `30%`, the heartbeat bar pulses yellow and says so. `IGNORE` appears only while that warning is active; after ignoring, a flashing yellow `WARN` button remains while the low-volume condition still exists. A warning prompt appears if the low-volume condition lasts 3 minutes, and configured DMs are sent at the same time.
+- The overlay also checks Windows master output volume. If the system is muted or below `30%`, the heartbeat bar pulses yellow and says so. `IGNORE` appears only while that warning is active; after ignoring, a flashing yellow `WARN` button remains while the low-volume condition still exists. A warning prompt appears if the low-volume condition lasts 3 minutes; if closed while the condition remains, it repeats 3 minutes after close. Configured DMs are sent when the prompt appears.
 - If the Maple window is not found while `target_window = true`, the overlay flashes red with `MAPLE NOT DETECTED`. The monitor keeps checking, so starting Maple after the alert tool is already running will switch capture to the window once the title appears.
 - Remote alerts stay off by default until you enable Telegram, Discord, or Pushover.
 
@@ -134,9 +135,9 @@ SYSTEM VOL OK 100%
 [TEST] LIE DETECT VOLUME 200% | PLAYER DETECT VOLUME 200%
 ```
 
-The spinner changes every few tenths of a second so you can see the overlay itself is alive. `LIE` and `PLAYER` are hidden until seen; after a detection, the top line uses `LIVE | LIE 2m ago PLAYER 1m ago`. During an active lie/player alert, the top bar flashes red with the current alert. Drag the overlay with the mouse if it covers something. Click the small `-` in the top-right to collapse the drawer to only the main status bar; it changes to `v` when collapsed. Click the small `X` in the top-right of the overlay to quit the whole one-click alert stack. Click `TEST` to play the lie detector alert first, then the player detected alert; each meter lights while its sound is being tested. Click or drag either filled meter to change that alert's intensity; settings are saved to `runtime\alert_settings.json`.
+The spinner changes every few tenths of a second so you can see the overlay itself is alive. `LIE` is hidden until a lie detection; `PLAYER` is hidden until the minimap player alert actually fires. After that, the top line uses `LIVE | LIE 2m ago PLAYER 1m ago`. During an active lie/player alert, the top bar flashes red with the current alert. Drag the overlay with the mouse if it covers something. Click the small `-` in the top-right to collapse the drawer to only the main status bar; it changes to `v` when collapsed. Click the small `X` in the top-right of the overlay to quit the whole one-click alert stack. Click `TEST` to play the lie detector alert first, then the player detected alert; each meter lights while its sound is being tested. Click or drag either filled meter to change that alert's intensity; settings are saved to `runtime\alert_settings.json`.
 
-If the system volume line flashes yellow, Windows audio is muted or below `30%`. The `IGNORE` button appears only while that warning is active; click it to suppress the current warning. While ignored, the small `WARN` button stays visible and flashes yellow until system volume recovers or you click it to re-enable the warning. If the condition lasts 3 minutes, a warning prompt appears and configured DMs are sent. If an alert volume section turns red, that alert intensity is below `25%`.
+If the system volume line flashes yellow, Windows audio is muted or below `30%`. The `IGNORE` button appears only while that warning is active; click it to suppress the current warning. While ignored, the small `WARN` button stays visible and flashes yellow until system volume recovers or you click it to re-enable the warning. If the condition lasts 3 minutes, a warning prompt appears and configured DMs are sent; if closed while still low, it repeats 3 minutes after close. If an alert volume section turns red, that alert intensity is below `25%`.
 
 If the capture size changes while running, the monitor recalculates `pixel_scale` and the overlay briefly shows `DETECTED NEW RESOLUTION WxH`. The command window also prints useful state changes such as Maple detected/not detected, detected resolution changes, detection alerts, repeated continued alerts, and cleared detections.
 
@@ -195,6 +196,7 @@ fixture checks. The detector fixture checks are explicit optional commands:
 ```powershell
 .\.venv\Scripts\python.exe _source\tools\test_captcha_patch_images.py C:\path\to\screenshot-fixtures
 .\.venv\Scripts\python.exe _source\tools\test_minimap_red_images.py C:\path\to\screenshot-fixtures
+.\.venv\Scripts\python.exe _source\tools\test_dead_player_images.py
 ```
 
 Run the optional fixture checks before detector, ROI, scaling, or threshold
@@ -204,7 +206,12 @@ continuation notes.
 
 ## Watchdog Limits
 
-The watchdog is practical protection, not a guarantee. It can catch normal Python crashes, module errors, most hangs that stop the capture loop, and stale heartbeat writes. A single monitor crash is logged and restarted quietly. The watchdog alarm starts only if the monitor is unavailable for 120 seconds or if 3 monitor failures happen inside 5 minutes; it repeats no faster than every 120 seconds while the monitor remains unhealthy. The overlay flashes red with `MONITOR CRASHED X TIMES IN 5 MINS` or `MONITOR DOWN Xm+`, then keeps that warning latched until the monitor has recovered cleanly for 600 seconds. The batch launcher also starts an outer PowerShell supervisor, which restarts the watchdog if the watchdog exits or stops updating its own heartbeat for about 30 seconds while the launcher window is still open.
+The watchdog is practical protection, not a guarantee. It can catch normal Python crashes, module errors, most hangs that stop the capture loop, and stale heartbeat writes. A single monitor crash is logged and restarted quietly. The watchdog alarm starts only if the monitor is unavailable for 120 seconds or if 5 monitor failures happen inside 5 minutes; crash-loop alarms consume the counted crash events, so another crash-loop alarm requires 5 fresh failures inside a new 5-minute window. It repeats no faster than every configured interval, clamped to at least 60 seconds, while the monitor remains unhealthy. The overlay flashes red and cycles every 3 seconds between `ERROR: MAPLEALERT CRASHED X TIMES` and `SEE ERROR IN TERMINAL`, then keeps that warning latched until the monitor has recovered cleanly for 600 seconds. The batch launcher also starts an outer PowerShell supervisor, which restarts the watchdog if the watchdog exits or stops updating its own heartbeat for about 30 seconds while the launcher window is still open.
+
+If the PC sleeps or the process is paused long enough that wall-clock or heartbeat
+age exceeds `sleep_silence_seconds` (default `3600`), watchdog/supervisor audio
+and watchdog remote alerts stay quiet until the monitor heartbeat recovers. This
+prevents a wake-from-sleep alert burst after a laptop was closed overnight.
 
 No local wrapper can be completely failsafe if Windows sleeps, the PC loses power, audio is muted, the command window is closed, the whole system freezes, PowerShell itself hangs, or Telegram/network access is unavailable. For extra resilience, keep the command window visible and use Windows Task Scheduler to start `START_MAPLE_ALERT.bat` at login.
 
@@ -212,6 +219,7 @@ Sound patterns:
 
 ```text
 CAPTCHA / lie detector: 1300 Hz for 450 ms, then 1600 Hz for 450 ms, generated as WAV.
+Dead prompt:           Same pattern and volume path as CAPTCHA / lie detector.
 Red minimap marker:     900 Hz for 250 ms, then 900 Hz for 250 ms, generated as WAV.
 Python watchdog alert:  1800 Hz for 250 ms, then 900 Hz for 250 ms, repeated 3 times, generated as WAV.
 Outer supervisor alert: 2200 Hz for 180 ms, repeated 4 times with short gaps.
@@ -263,17 +271,18 @@ minimap_repeat_seconds = 30
 status_interval_seconds = 15
 ```
 
-`sound_multiplier` and `alert_volume_percent` are kept as fallbacks for older configs. New configs use `lie_detect_volume_percent` and `player_detected_volume_percent`; `100` is normal generated-WAV amplitude and `250` is the highest generated-WAV amplitude.
+`sound_multiplier` and `alert_volume_percent` are kept as fallbacks for older configs. New configs use `lie_detect_volume_percent` and `player_detected_volume_percent`; `100` is normal generated-WAV amplitude and `300` is the highest generated-WAV amplitude.
 
 Watchdog health thresholds:
 
 ```toml
 [watchdog]
 crash_window_seconds = 300
-crash_alert_count = 3
+crash_alert_count = 5
 monitor_down_alert_seconds = 120
 watchdog_realert_seconds = 120
 healthy_clear_seconds = 600
+sleep_silence_seconds = 3600
 ```
 
 To export or regenerate the WAV files:

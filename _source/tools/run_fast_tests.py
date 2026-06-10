@@ -9,6 +9,7 @@ TOOLS_DIR = Path(__file__).resolve().parent
 
 OPTIONAL_FIXTURE_TESTS = {
     "test_captcha_patch_images.py",
+    "test_dead_player_images.py",
     "test_free_market_title_images.py",
     "test_minimap_red_images.py",
 }

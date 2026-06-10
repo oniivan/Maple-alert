@@ -74,8 +74,9 @@ def test_system_volume_prompt_waits_three_minutes_and_repeats_only_after_close()
     assert tracker.update(needs_attention=True, ignored=False, prompt_open=False, now=179) is False
     assert tracker.update(needs_attention=True, ignored=False, prompt_open=False, now=180) is True
     assert tracker.update(needs_attention=True, ignored=False, prompt_open=True, now=181) is False
-    assert tracker.update(needs_attention=True, ignored=False, prompt_open=False, now=359) is False
-    assert tracker.update(needs_attention=True, ignored=False, prompt_open=False, now=360) is True
+    assert tracker.update(needs_attention=True, ignored=False, prompt_open=False, now=240) is False
+    assert tracker.update(needs_attention=True, ignored=False, prompt_open=False, now=419) is False
+    assert tracker.update(needs_attention=True, ignored=False, prompt_open=False, now=420) is True
 
 
 def test_system_volume_prompt_resets_when_volume_recovers_or_is_ignored() -> None:

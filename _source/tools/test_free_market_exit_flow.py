@@ -8,9 +8,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from maple_alert import (  # noqa: E402
     DEFAULT_CONFIG,
+    DEAD_PLAYER_EXIT_FAILED_WARNING,
+    DEAD_PLAYER_FORCE_CLOSED_MESSAGE,
+    DeadPlayerExitController,
     FREE_MARKET_EXIT_FAILED_WARNING,
     FREE_MARKET_FORCE_CLOSED_MESSAGE,
     FreeMarketExitController,
+    format_minutes_seconds_countdown,
 )
 from vision_core import DetectionResult  # noqa: E402
 
@@ -21,6 +25,9 @@ def make_config() -> dict:
     config["free_market_exit"]["countdown_seconds"] = 10
     config["free_market_exit"]["reset_after_clear_seconds"] = 12
     config["free_market_exit"]["trigger_after_captcha_clear_seconds"] = 20
+    config["dead_player_exit"]["enabled"] = True
+    config["dead_player_exit"]["countdown_seconds"] = 180
+    config["dead_player_exit"]["reset_after_clear_seconds"] = 12
     return config
 
 
@@ -138,6 +145,51 @@ def test_free_market_prompt_messages_match_safeguard_copy() -> None:
     assert FREE_MARKET_EXIT_FAILED_WARNING == "WARNING: msw.exe was not detected, unable to close the game!"
 
 
+def test_dead_player_countdown_expiry_requests_exit_once() -> None:
+    controller = DeadPlayerExitController(make_config())
+
+    shown = controller.update(result(True), now=0.0, target_pid=123)
+    assert shown.action == "show_prompt"
+    assert shown.seconds_left == 180
+    assert controller.update(result(True), now=1.0, target_pid=123).seconds_left == 179
+    assert controller.update(result(True), now=179.9, target_pid=123).action is None
+    assert controller.update(result(True), now=180.0, target_pid=123).action == "exit"
+    assert controller.update(result(True), now=181.0, target_pid=123).action is None
+
+
+def test_dead_player_prompt_resets_after_clear_without_exit() -> None:
+    controller = DeadPlayerExitController(make_config())
+
+    assert controller.update(result(True), now=0.0, target_pid=123).action == "show_prompt"
+    cleared = controller.update(result(False), now=1.0, target_pid=123)
+    assert cleared.action is None
+    assert cleared.seconds_left == 179
+    assert controller.update(result(False), now=12.9, target_pid=123).action is None
+    assert controller.update(result(False), now=13.0, target_pid=123).action == "reset"
+    assert controller.update(result(True), now=14.0, target_pid=123).action == "show_prompt"
+
+
+def test_dead_player_cancel_waits_for_clear_before_retrigger() -> None:
+    controller = DeadPlayerExitController(make_config())
+
+    assert controller.update(result(True), now=0.0, target_pid=123).action == "show_prompt"
+    controller.cancel(now=1.0)
+    assert controller.update(result(True), now=2.0, target_pid=123).action is None
+    assert controller.update(result(False), now=3.0, target_pid=123).action is None
+    assert controller.update(result(False), now=15.0, target_pid=123).action == "reset"
+    assert controller.update(result(True), now=16.0, target_pid=123).action == "show_prompt"
+
+
+def test_dead_player_prompt_messages_match_safeguard_copy() -> None:
+    assert format_minutes_seconds_countdown(180) == "3m 0s"
+    assert format_minutes_seconds_countdown(61) == "1m 1s"
+    assert DEAD_PLAYER_FORCE_CLOSED_MESSAGE == (
+        "Detected player death.\n\n"
+        "SAFEGUARD: Force-closed the game."
+    )
+    assert DEAD_PLAYER_EXIT_FAILED_WARNING == "WARNING: msw.exe was not detected, unable to close the game!"
+
+
 if __name__ == "__main__":
     test_cancel_waits_until_free_market_has_cleared_long_enough()
     test_countdown_expiry_requests_exit_once()
@@ -148,4 +200,8 @@ if __name__ == "__main__":
     test_real_detection_can_retrigger_after_failed_exit_state()
     test_failed_exit_state_does_not_restart_from_same_stale_detection()
     test_free_market_prompt_messages_match_safeguard_copy()
+    test_dead_player_countdown_expiry_requests_exit_once()
+    test_dead_player_prompt_resets_after_clear_without_exit()
+    test_dead_player_cancel_waits_for_clear_before_retrigger()
+    test_dead_player_prompt_messages_match_safeguard_copy()
     print("free market exit flow tests passed")
