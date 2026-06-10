@@ -1,3 +1,5 @@
-_internal/** -text
-MapleAlert.exe -text
-alert_sounds/*.wav -text
+_internal/** -text linguist-vendored
+MapleAlert.exe -text linguist-generated
+alert_sounds/*.wav -text linguist-generated
+release_manifest.json linguist-generated
+SHA256SUMS.txt linguist-generated
